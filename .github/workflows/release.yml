@@ -48,8 +48,9 @@ jobs:
 
       - name: Bump patch version
         id: version
+        shell: pwsh
         run: |
-          $version = python scripts/bump_version.py --write
+          $version = python -c "from autopaint.versioning import bump_patch_version; print(bump_patch_version())"
           echo "value=$version" >> $env:GITHUB_OUTPUT
           echo "Bumped version to $version"
 
