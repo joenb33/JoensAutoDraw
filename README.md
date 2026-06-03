@@ -79,7 +79,8 @@ Everything below is used in this repo today:
 | **Emergency stop** | Win32 `GetAsyncKeyState` + [`keyboard`](https://github.com/boppreh/keyboard) | Poll `ESC` during draw and countdown |
 | **Packaging** | [PyInstaller](https://pyinstaller.org/) | Single-file `.exe` for releases |
 | **Tests** | [pytest](https://pytest.org/) | Planner, pipeline, drawer, validation |
-| **CI / Release** | GitHub Actions | Test on every push; build `.exe` on version tags |
+| **CI / Release** | GitHub Actions | PR tests + auto bump/build/release on every push to `main` |
+| **Auto-update** | GitHub Releases API | Packaged `.exe` checks for updates on startup |
 
 ### Internal modules (Python package `autopaint/`)
 
@@ -181,6 +182,38 @@ Full list: `python -m autopaint.main --help`
 
 ---
 
+## Automatic releases
+
+Every push to **`main`** triggers the release workflow:
+
+1. Run the full pytest suite  
+2. Bump the patch version in `autopaint/__init__.py` (`0.1.0` → `0.1.1`)  
+3. Commit `chore(release): bump version to …` and create a git tag  
+4. Build `JoensAutoDraw.exe` and publish a GitHub Release  
+
+Pull requests run the same tests via CI **without** creating a release.
+
+Skip a release bump by starting your commit message with `[skip release]` *(future)* — release commits from the bot (`chore(release): …`) are ignored automatically.
+
+---
+
+## Auto-update (packaged `.exe` only)
+
+When you run **`JoensAutoDraw.exe`**, the app checks  
+[GitHub Releases](https://github.com/joenb33/JoensAutoDraw/releases/latest) on startup.
+
+| Step | What happens |
+|------|----------------|
+| 1 | Compare local version vs latest release |
+| 2 | If newer → offer to download |
+| 3 | Download `JoensAutoDraw.exe` in the background |
+| 4 | Restart to apply (replaces the running executable) |
+
+Running from source (`python -m autopaint.gui`) skips update checks.  
+Set `JOENSAUTODRAW_SKIP_UPDATE=1` to disable checks in the packaged app.
+
+---
+
 ## Build your own `.exe`
 
 ```powershell
@@ -189,7 +222,7 @@ pyinstaller --noconfirm JoensAutoDraw.spec
 # Output: dist/JoensAutoDraw.exe
 ```
 
-Releases are built automatically when a `v*` tag is pushed (see `.github/workflows/release.yml`).
+Local builds use the version in `autopaint/__init__.py`.
 
 ---
 
@@ -225,8 +258,10 @@ Details: [docs/SAFETY.md](docs/SAFETY.md)
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m pytest tests/ -v
+python -m pytest tests/ -v --tb=short
 ```
+
+GitHub Actions uses `windows-2022` runners with Node.js 24-compatible action settings to avoid deprecation warnings.
 
 - [Usage guide](docs/USAGE.md)  
 - [Architecture](docs/ARCHITECTURE.md)  

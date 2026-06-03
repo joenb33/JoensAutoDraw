@@ -10,12 +10,14 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from autopaint import __version__
 from autopaint.config import DrawConfig, ProcessingConfig
 from autopaint.drawer import BoundsViolation, RasterSize, simulate_tool_commands
 from autopaint.failsafe import EmergencyStop, esc_backend_description
 from autopaint.pipeline import build_execution_commands, create_plan, execute_draw, resolve_draw_polylines
 from autopaint.validation import DrawValidationError
 from autopaint.planner import render_polyline_preview, render_segment_preview
+from autopaint.updater import download_update, fetch_latest_update, schedule_apply_update
 from autopaint.types import Rect
 
 
@@ -25,7 +27,7 @@ class AutoPaintGui(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.title("AutoPaint - Smart Drawer")
+        self.title(f"JoensAutoDraw v{__version__}")
         self.geometry("980x680")
         self.minsize(900, 620)
 
@@ -58,6 +60,63 @@ class AutoPaintGui(ctk.CTk):
         self._pipeline_labels: dict[str, ctk.CTkLabel] = {}
         self._toolpath_stats_label: ctk.CTkLabel | None = None
         self._build_layout()
+        self.after(UPDATE_CHECK_DELAY_MS, self._check_for_updates_on_startup)
+
+    def _check_for_updates_on_startup(self) -> None:
+        def worker() -> None:
+            try:
+                update = fetch_latest_update()
+            except Exception:
+                return
+            if update is None:
+                return
+
+            def prompt() -> None:
+                self._append_log(f"Update available: v{update.version} (current v{__version__}).")
+                if not messagebox.askyesno(
+                    "Update available",
+                    f"A new version is available: v{update.version}\n"
+                    f"You are running v{__version__}.\n\n"
+                    "Download and install it now?",
+                ):
+                    self._append_log("Update skipped by user.")
+                    return
+
+                self._append_log(f"Downloading v{update.version}...")
+                self.status_label.configure(text="Downloading update...")
+
+                def download_worker() -> None:
+                    try:
+                        downloaded = download_update(update)
+                    except Exception as exc:
+                        self.after(
+                            0,
+                            lambda: (
+                                self._append_log(f"Update download failed: {exc}"),
+                                self.status_label.configure(text="Update failed"),
+                            ),
+                        )
+                        return
+
+                    def offer_restart() -> None:
+                        self.status_label.configure(text="Update ready")
+                        self._append_log(f"Update downloaded: {downloaded}")
+                        if messagebox.askokcancel(
+                            "Restart to update",
+                            f"Version v{update.version} is ready.\n"
+                            "Restart JoensAutoDraw now to apply the update?",
+                        ):
+                            schedule_apply_update(downloaded)
+                        else:
+                            self._append_log("Update will apply on next manual restart.")
+
+                    self.after(0, offer_restart)
+
+                threading.Thread(target=download_worker, daemon=True).start()
+
+            self.after(0, prompt)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=1)

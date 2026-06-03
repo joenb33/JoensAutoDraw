@@ -2,49 +2,66 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+
+concurrency:
+  group: release-main
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
-jobs:
-  test:
-    name: Tests
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-      - run: python -m pytest tests/ -v
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-  build:
-    name: Build Windows .exe
-    needs: test
-    runs-on: windows-latest
+jobs:
+  release:
+    name: Test, bump, build, publish
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: windows-2022
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-build.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-build.txt
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
           pip install -r requirements-build.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Bump patch version
+        id: version
+        run: |
+          $version = python scripts/bump_version.py --write
+          echo "value=$version" >> $env:GITHUB_OUTPUT
+          echo "Bumped version to $version"
+
+      - name: Commit version bump and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add autopaint/__init__.py
+          git commit -m "chore(release): bump version to ${{ steps.version.outputs.value }}"
+          git tag "v${{ steps.version.outputs.value }}"
+          git push origin main
+          git push origin "v${{ steps.version.outputs.value }}"
 
       - name: Build executable
         run: pyinstaller --noconfirm JoensAutoDraw.spec
@@ -52,11 +69,13 @@ jobs:
       - name: Create release zip
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/JoensAutoDraw.exe -DestinationPath dist/JoensAutoDraw-win64.zip
+          Compress-Archive -Path dist/JoensAutoDraw.exe -DestinationPath dist/JoensAutoDraw-win64.zip -Force
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.value }}
+          name: v${{ steps.version.outputs.value }}
           generate_release_notes: true
           files: |
             dist/JoensAutoDraw.exe
