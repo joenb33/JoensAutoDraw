@@ -26,5 +26,9 @@ Desktop.ini
 # AutoPaint runtime
 debug-*.log
 
+# Local example assets (only cat.png is tracked)
+examples/*
+!examples/cat.png
+
 # Local assets (optional user screenshots)
 assets/
