@@ -140,6 +140,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print draw actions only.")
     parser.add_argument("--invert", action="store_true", help="Invert threshold behavior.")
     parser.add_argument(
+        "--otsu",
+        action="store_true",
+        help="Use Otsu automatic threshold instead of fixed --threshold.",
+    )
+    parser.add_argument(
+        "--morph-close",
+        type=_int_min(0),
+        default=0,
+        help="Morphological close kernel (0=off, odd values fill gaps).",
+    )
+    parser.add_argument(
+        "--morph-open",
+        type=_int_min(0),
+        default=0,
+        help="Morphological open kernel (0=off, odd values remove speckle).",
+    )
+    parser.add_argument(
+        "--contour-mode",
+        choices=("external", "all", "largest"),
+        default="external",
+        help="Contour extraction scope for CNC mode.",
+    )
+    parser.add_argument(
+        "--min-contour-area",
+        type=_int_min(0),
+        default=25,
+        help="Ignore contours smaller than this area in pixels.",
+    )
+    parser.add_argument(
         "--mode",
         choices=("segments", "contour"),
         default="contour",
@@ -189,6 +218,11 @@ def main() -> int:
         vector_sample_step=args.vector_step,
         vector_min_polyline_points=args.vector_min_points,
         vector_jump_threshold_px=args.vector_jump_threshold,
+        use_otsu=args.otsu,
+        morph_close_kernel=args.morph_close,
+        morph_open_kernel=args.morph_open,
+        contour_mode=args.contour_mode,
+        min_contour_area=args.min_contour_area,
     )
     draw_conf = DrawConfig(
         move_duration=args.speed,

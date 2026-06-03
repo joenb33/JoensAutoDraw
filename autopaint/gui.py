@@ -16,11 +16,14 @@ from autopaint.drawer import BoundsViolation, RasterSize, simulate_tool_commands
 from autopaint.failsafe import EmergencyStop, esc_backend_description
 from autopaint.pipeline import build_execution_commands, create_plan, execute_draw, resolve_draw_polylines
 from autopaint.validation import DrawValidationError
+from autopaint.image_processing import build_binary_mask_from_gray, load_image_grayscale
 from autopaint.planner import render_polyline_preview, render_segment_preview
 from autopaint.updater import download_update, fetch_latest_update, schedule_apply_update
 from autopaint.types import Rect
 
 UPDATE_CHECK_DELAY_MS = 1500
+LIVE_PREVIEW_DEBOUNCE_MS = 250
+RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
 class AutoPaintGui(ctk.CTk):
@@ -53,6 +56,11 @@ class AutoPaintGui(ctk.CTk):
         self.show_travel_preview = ctk.BooleanVar(value=True)
         self.mode = ctk.StringVar(value="contour")
         self.contour_epsilon = ctk.DoubleVar(value=1.2)
+        self.use_otsu = ctk.BooleanVar(value=False)
+        self.morph_close = ctk.IntVar(value=0)
+        self.morph_open = ctk.IntVar(value=0)
+        self.min_contour_area = ctk.IntVar(value=25)
+        self.contour_scope = ctk.StringVar(value="external")
 
         self._busy = False
         self._last_plan = None
@@ -61,7 +69,10 @@ class AutoPaintGui(ctk.CTk):
         self._slider_value_labels: dict[str, ctk.CTkLabel] = {}
         self._pipeline_labels: dict[str, ctk.CTkLabel] = {}
         self._toolpath_stats_label: ctk.CTkLabel | None = None
+        self._live_preview_after_id: str | None = None
+        self._live_plan_generation = 0
         self._build_layout()
+        self._bind_live_preview_traces()
         self.after(UPDATE_CHECK_DELAY_MS, self._check_for_updates_on_startup)
 
     def _check_for_updates_on_startup(self) -> None:
@@ -225,10 +236,12 @@ class AutoPaintGui(ctk.CTk):
         preview_panel.grid_rowconfigure(1, weight=1)
         preview_panel.grid_rowconfigure(2, weight=0)
 
-        ctk.CTkLabel(preview_panel, text="Source / Travel Preview").grid(
+        ctk.CTkLabel(preview_panel, text="Binary mask (live)").grid(
             row=0, column=0, sticky="w", padx=8, pady=(8, 4)
         )
-        ctk.CTkLabel(preview_panel, text="Planned Preview").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 4))
+        ctk.CTkLabel(preview_panel, text="Toolpath preview (live)").grid(
+            row=0, column=1, sticky="w", padx=8, pady=(8, 4)
+        )
 
         self.mask_preview = ctk.CTkLabel(preview_panel, text="No preview yet")
         self.mask_preview.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -339,10 +352,35 @@ class AutoPaintGui(ctk.CTk):
         row += 1
         self._add_slider(parent, row, "Contour epsilon", self.contour_epsilon, 0.5, 6.0)
         row += 1
+        self._add_slider(parent, row, "Min contour area", self.min_contour_area, 0, 500)
+        row += 1
+        self._add_slider(parent, row, "Morph close", self.morph_close, 0, 15)
+        row += 1
+        self._add_slider(parent, row, "Morph open", self.morph_open, 0, 15)
+        row += 1
 
+        ctk.CTkLabel(parent, text="Contour scope").grid(row=row, column=0, sticky="w", pady=4)
+        ctk.CTkSegmentedButton(
+            parent,
+            values=["external", "all", "largest"],
+            variable=self.contour_scope,
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        row += 1
+
+        ctk.CTkCheckBox(parent, text="Auto threshold (Otsu)", variable=self.use_otsu).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=6
+        )
+        row += 1
         ctk.CTkCheckBox(parent, text="Invert threshold", variable=self.invert).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=6
         )
+        row += 1
+        ctk.CTkLabel(
+            parent,
+            text="Tip: external = outer outlines only. Increase Min area to drop speckle.",
+            justify="left",
+            anchor="w",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
 
     def _add_vector_controls(self, parent) -> None:
         row = 0
@@ -464,11 +502,134 @@ class AutoPaintGui(ctk.CTk):
             self._set_pipeline_step("import", "done")
             self._set_pipeline_step("plan", "ready")
             self._set_pipeline_step("draw", "waiting")
+            self._schedule_live_preview(replan=True)
+
+    def _is_raster_source(self) -> bool:
+        path = self.image_path.get().strip()
+        if not path:
+            return False
+        return Path(path).suffix.lower() in RASTER_SUFFIXES
+
+    def _bind_live_preview_traces(self) -> None:
+        replan_vars = (
+            self.threshold,
+            self.blur,
+            self.step,
+            self.line_gap,
+            self.contour_epsilon,
+            self.invert,
+            self.use_otsu,
+            self.morph_close,
+            self.morph_open,
+            self.min_contour_area,
+            self.contour_scope,
+            self.vector_step,
+            self.vector_min_points,
+            self.vector_jump_threshold,
+            self.mode,
+        )
+        preview_only_vars = (self.preview_stroke_px, self.show_travel_preview, self.optimize_contour_travel)
+
+        for variable in replan_vars:
+            variable.trace_add("write", lambda *_args: self._schedule_live_preview(replan=True))
+        for variable in preview_only_vars:
+            variable.trace_add("write", lambda *_args: self._schedule_live_preview(replan=False))
+
+    def _schedule_live_preview(self, *, replan: bool) -> None:
+        if not self.image_path.get() or self._busy:
+            return
+        if self._live_preview_after_id is not None:
+            self.after_cancel(self._live_preview_after_id)
+        self._live_preview_after_id = self.after(
+            LIVE_PREVIEW_DEBOUNCE_MS,
+            lambda: self._run_live_preview(replan=replan),
+        )
+
+    def _run_live_preview(self, *, replan: bool) -> None:
+        self._live_preview_after_id = None
+        if not self.image_path.get() or self._busy:
+            return
+
+        if replan and self._is_raster_source():
+            try:
+                processing = self._build_processing()
+                gray = load_image_grayscale(processing.image_path)
+                mask = build_binary_mask_from_gray(gray, processing)
+                self._show_mask_preview(mask)
+            except Exception:
+                pass
+            self._run_live_plan_worker()
+            return
+
+        if replan:
+            self._run_live_plan_worker()
+            return
+
+        if self._last_plan is not None:
+            self._update_previews(self._last_plan, mode=self.mode.get())
+            self._update_toolpath_stats(self._last_plan)
+
+    def _run_live_plan_worker(self) -> None:
+        self._live_plan_generation += 1
+        generation = self._live_plan_generation
+
+        def worker() -> None:
+            try:
+                processing = self._build_processing()
+                plan = create_plan(
+                    processing=processing,
+                    contour_epsilon=float(self.contour_epsilon.get()),
+                )
+            except Exception:
+                return
+            if generation != self._live_plan_generation:
+                return
+            self._last_plan = plan
+            mode = self.mode.get()
+            self._update_previews(plan, mode=mode)
+            self._update_toolpath_stats(plan)
+
+            def finish() -> None:
+                self._set_pipeline_step("plan", "done")
+                if self._selected_rect is not None:
+                    self._set_pipeline_step("draw", "ready")
+                self.status_label.configure(text="Live preview updated")
+
+            self.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _array_to_preview_image(self, array: np.ndarray) -> ctk.CTkImage:
+        canvas_size = 280
+        rgb = cv2.cvtColor(array, cv2.COLOR_GRAY2RGB)
+        src_h, src_w = rgb.shape[:2]
+        scale = min(canvas_size / max(1, src_w), canvas_size / max(1, src_h))
+        dst_w = max(1, int(round(src_w * scale)))
+        dst_h = max(1, int(round(src_h * scale)))
+        resized = cv2.resize(rgb, (dst_w, dst_h), interpolation=cv2.INTER_NEAREST)
+        canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
+        x = (canvas_size - dst_w) // 2
+        y = (canvas_size - dst_h) // 2
+        canvas[y : y + dst_h, x : x + dst_w] = resized
+        pil = Image.fromarray(canvas)
+        return ctk.CTkImage(light_image=pil, dark_image=pil, size=(280, 280))
+
+    def _show_mask_preview(self, mask: np.ndarray) -> None:
+        mask_img = self._array_to_preview_image(mask)
+
+        def update() -> None:
+            self._preview_images = [mask_img, *self._preview_images[1:2]]
+            self.mask_preview.configure(image=mask_img, text="")
+
+        self.after(0, update)
 
     def _build_processing(self) -> ProcessingConfig:
         blur = int(round(self.blur.get()))
         if blur % 2 == 0:
             blur += 1
+        scope = self.contour_scope.get()
+        if scope not in {"external", "all", "largest"}:
+            scope = "external"
         return ProcessingConfig(
             image_path=Path(self.image_path.get()),
             threshold=int(round(self.threshold.get())),
@@ -479,6 +640,11 @@ class AutoPaintGui(ctk.CTk):
             vector_sample_step=max(0.5, float(self.vector_step.get())),
             vector_min_polyline_points=max(2, int(round(self.vector_min_points.get()))),
             vector_jump_threshold_px=max(1.0, float(self.vector_jump_threshold.get())),
+            use_otsu=self.use_otsu.get(),
+            morph_close_kernel=max(0, int(round(self.morph_close.get()))),
+            morph_open_kernel=max(0, int(round(self.morph_open.get()))),
+            contour_mode=scope,
+            min_contour_area=max(0, int(round(self.min_contour_area.get()))),
         )
 
     def _build_draw(self) -> DrawConfig:
@@ -628,19 +794,7 @@ class AutoPaintGui(ctk.CTk):
             return travel
 
         def to_ctk_image(array):
-            canvas_size = 280
-            rgb = cv2.cvtColor(array, cv2.COLOR_GRAY2RGB)
-            src_h, src_w = rgb.shape[:2]
-            scale = min(canvas_size / max(1, src_w), canvas_size / max(1, src_h))
-            dst_w = max(1, int(round(src_w * scale)))
-            dst_h = max(1, int(round(src_h * scale)))
-            resized = cv2.resize(rgb, (dst_w, dst_h), interpolation=cv2.INTER_NEAREST)
-            canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
-            x = (canvas_size - dst_w) // 2
-            y = (canvas_size - dst_h) // 2
-            canvas[y : y + dst_h, x : x + dst_w] = resized
-            pil = Image.fromarray(canvas)
-            return ctk.CTkImage(light_image=pil, dark_image=pil, size=(280, 280))
+            return self._array_to_preview_image(array)
 
         def update_ui() -> None:
             preview_thickness = max(1, int(round(self.preview_stroke_px.get())))

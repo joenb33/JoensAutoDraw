@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+ContourMode = Literal["external", "all", "largest"]
 
 
 @dataclass(frozen=True)
@@ -13,6 +16,11 @@ class ProcessingConfig:
     vector_sample_step: float = 1.0
     vector_min_polyline_points: int = 2
     vector_jump_threshold_px: float = 8.0
+    use_otsu: bool = False
+    morph_close_kernel: int = 0
+    morph_open_kernel: int = 0
+    contour_mode: ContourMode = "external"
+    min_contour_area: int = 25
 
 
 @dataclass(frozen=True)
@@ -24,4 +32,3 @@ class DrawConfig:
     stroke_settle_seconds: float = 0.0
     optimize_contour_travel: bool = True
     compatibility_mode: bool = True
-

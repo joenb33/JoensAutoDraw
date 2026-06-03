@@ -23,7 +23,7 @@ from autopaint.validation import (
     validate_plan_has_draw_content,
     validate_target_rect,
 )
-from autopaint.image_processing import build_binary_mask, load_image_grayscale
+from autopaint.image_processing import build_binary_mask_from_gray, load_image_grayscale
 from autopaint.types import Rect
 from autopaint.planner import (
     mask_to_contour_polylines,
@@ -60,12 +60,17 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         return _create_vector_plan(processing=processing)
 
     gray = load_image_grayscale(processing.image_path)
-    mask = build_binary_mask(processing)
+    mask = build_binary_mask_from_gray(gray, processing)
 
     segments = mask_to_segments(
         mask=mask, sample_step=processing.sample_step, max_line_gap=processing.max_line_gap
     )
-    raw_polylines = mask_to_contour_polylines(mask=mask, min_points=3)
+    raw_polylines = mask_to_contour_polylines(
+        mask=mask,
+        min_points=3,
+        contour_mode=processing.contour_mode,
+        min_contour_area=processing.min_contour_area,
+    )
     polylines = simplify_polylines(raw_polylines, epsilon=contour_epsilon)
 
     preview_segments = render_segment_preview(mask=mask, segments=segments)

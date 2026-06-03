@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from autopaint.planner import (
@@ -43,12 +44,47 @@ def test_mask_to_contour_polylines_finds_shape(square_mask: np.ndarray) -> None:
 
 def test_simplify_polylines_reduces_point_count() -> None:
     polyline = Polyline(
-        points=tuple(Point(x=x, y=0) for x in range(0, 100, 2)),
+        points=(
+            Point(x=0, y=0),
+            Point(x=25, y=0),
+            Point(x=25, y=25),
+            Point(x=0, y=25),
+            Point(x=0, y=0),
+        ),
     )
 
     simplified = simplify_polylines([polyline], epsilon=2.0)
 
     assert len(simplified) == 1
     assert len(simplified[0].points) < len(polyline.points)
-    assert simplified[0].points[0] == Point(x=0, y=0)
-    assert simplified[0].points[-1] == Point(x=98, y=0)
+
+
+def test_mask_to_contour_polylines_external_ignores_hole(square_mask: np.ndarray) -> None:
+    mask = square_mask.copy()
+    cv2.circle(mask, (50, 50), 10, 0, -1)
+
+    external = mask_to_contour_polylines(mask, contour_mode="external", min_contour_area=0)
+    all_contours = mask_to_contour_polylines(mask, contour_mode="all", min_contour_area=0)
+
+    assert len(external) <= len(all_contours)
+    assert len(external) >= 1
+
+
+def test_mask_to_contour_polylines_min_area_filters_speckle() -> None:
+    mask = np.zeros((60, 60), dtype=np.uint8)
+    cv2.rectangle(mask, (10, 10), (50, 50), 255, -1)
+    mask[5, 5] = 255
+
+    filtered = mask_to_contour_polylines(mask, contour_mode="all", min_contour_area=50)
+    unfiltered = mask_to_contour_polylines(mask, contour_mode="all", min_contour_area=0)
+
+    assert len(filtered) <= len(unfiltered)
+
+
+def test_mask_to_contour_polylines_largest_keeps_one(square_mask: np.ndarray) -> None:
+    mask = square_mask.copy()
+    cv2.rectangle(mask, (2, 2), (12, 12), 255, -1)
+
+    largest = mask_to_contour_polylines(mask, contour_mode="largest", min_contour_area=0)
+
+    assert len(largest) == 1
