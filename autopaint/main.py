@@ -169,6 +169,27 @@ def parse_args() -> argparse.Namespace:
         help="Ignore contours smaller than this area in pixels.",
     )
     parser.add_argument(
+        "--no-auto-exif-rotate",
+        action="store_true",
+        help="Disable automatic EXIF orientation correction on import.",
+    )
+    parser.add_argument(
+        "--no-alpha-mask",
+        action="store_true",
+        help="Ignore transparent alpha channels when building the mask.",
+    )
+    parser.add_argument(
+        "--clahe",
+        type=_float_min(0.0),
+        default=0.0,
+        help="CLAHE contrast clip limit before threshold (0=off, try 2-4 for photos).",
+    )
+    parser.add_argument(
+        "--no-auto-scale-epsilon",
+        action="store_true",
+        help="Disable contour epsilon scaling for large images.",
+    )
+    parser.add_argument(
         "--mode",
         choices=("segments", "contour"),
         default="contour",
@@ -223,6 +244,10 @@ def main() -> int:
         morph_open_kernel=args.morph_open,
         contour_mode=args.contour_mode,
         min_contour_area=args.min_contour_area,
+        auto_exif_rotate=not args.no_auto_exif_rotate,
+        use_alpha_mask=not args.no_alpha_mask,
+        clahe_clip_limit=args.clahe,
+        auto_scale_epsilon=not args.no_auto_scale_epsilon,
     )
     draw_conf = DrawConfig(
         move_duration=args.speed,
@@ -271,6 +296,8 @@ def main() -> int:
     print(f"Generated {plan.polyline_count} contour polylines")
     print(f"Generated {plan.command_count} tool commands")
     print(f"Selected mode: {args.mode}")
+    for warning in plan.import_warnings:
+        print(f"Import note: {warning}")
     print(f"Emergency stop: ESC ({esc_backend_description()}) or move cursor to top-left corner")
 
     if args.preview:

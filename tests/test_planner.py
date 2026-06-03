@@ -7,6 +7,7 @@ from autopaint.planner import (
     mask_to_contour_polylines,
     mask_to_segments,
     resample_polylines,
+    scaled_contour_epsilon,
     simplify_polylines,
     tune_polylines_for_draw,
 )

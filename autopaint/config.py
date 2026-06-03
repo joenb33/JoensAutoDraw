@@ -21,6 +21,10 @@ class ProcessingConfig:
     morph_open_kernel: int = 0
     contour_mode: ContourMode = "external"
     min_contour_area: int = 25
+    auto_exif_rotate: bool = True
+    use_alpha_mask: bool = True
+    clahe_clip_limit: float = 0.0
+    auto_scale_epsilon: bool = True
 
 
 @dataclass(frozen=True)

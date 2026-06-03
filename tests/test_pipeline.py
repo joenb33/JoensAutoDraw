@@ -18,6 +18,7 @@ def test_create_plan_from_image(temp_square_image) -> None:
     assert plan.polyline_count >= 1
     assert plan.segment_count > 0
     assert plan.command_count > 0
+    assert isinstance(plan.import_warnings, tuple)
 
 
 def test_build_execution_commands_uses_segments_in_segment_mode(temp_square_image) -> None:

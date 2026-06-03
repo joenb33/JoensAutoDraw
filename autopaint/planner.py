@@ -164,6 +164,17 @@ def tune_polylines_for_draw(
     return resample_polylines(filtered, step_px=sample_step_px)
 
 
+def scaled_contour_epsilon(
+    base_epsilon: float, width: int, height: int, *, auto_scale: bool
+) -> float:
+    """Scale simplification with image size (defaults tuned around ~400 px)."""
+    if not auto_scale:
+        return max(0.0, float(base_epsilon))
+    reference = 400.0
+    scale = max(1.0, max(width, height) / reference)
+    return max(0.0, float(base_epsilon)) * scale
+
+
 def render_polyline_preview(
     mask: np.ndarray, polylines: Iterable[Polyline], thickness: int = 1
 ) -> np.ndarray:

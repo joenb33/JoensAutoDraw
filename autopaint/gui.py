@@ -17,14 +17,19 @@ from autopaint.drawer import BoundsViolation, RasterSize, simulate_tool_commands
 from autopaint.failsafe import EmergencyStop, esc_backend_description
 from autopaint.pipeline import build_execution_commands, create_plan, execute_draw, resolve_draw_polylines
 from autopaint.validation import DrawValidationError
-from autopaint.image_processing import build_binary_mask_from_gray, load_image_grayscale
+from autopaint.image_processing import (
+    RASTER_FILE_GLOB,
+    RASTER_SUFFIXES,
+    VECTOR_SUFFIXES,
+    build_binary_mask_from_prepared,
+    prepare_raster_image,
+)
 from autopaint.planner import render_polyline_preview, render_segment_preview
 from autopaint.updater import download_update, fetch_latest_update, schedule_apply_update
 from autopaint.types import Rect
 
 UPDATE_CHECK_DELAY_MS = 1500
 LIVE_PREVIEW_DEBOUNCE_MS = 250
-RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
 class AutoPaintGui(ctk.CTk):
@@ -62,6 +67,10 @@ class AutoPaintGui(ctk.CTk):
         self.morph_open = ctk.IntVar(value=0)
         self.min_contour_area = ctk.IntVar(value=25)
         self.contour_scope = ctk.StringVar(value="external")
+        self.auto_exif_rotate = ctk.BooleanVar(value=True)
+        self.use_alpha_mask = ctk.BooleanVar(value=True)
+        self.auto_scale_epsilon = ctk.BooleanVar(value=True)
+        self.clahe_clip = ctk.DoubleVar(value=0.0)
 
         self._busy = False
         self._last_plan = None
@@ -369,6 +378,8 @@ class AutoPaintGui(ctk.CTk):
         row += 1
         self._add_slider(parent, row, "Line gap", self.line_gap, 0, 8)
         row += 1
+        self._add_slider(parent, row, "Contrast (CLAHE)", self.clahe_clip, 0.0, 8.0)
+        row += 1
         self._add_slider(parent, row, "Contour epsilon", self.contour_epsilon, 0.5, 6.0)
         row += 1
         self._add_slider(parent, row, "Min contour area", self.min_contour_area, 0, 500)
@@ -394,9 +405,23 @@ class AutoPaintGui(ctk.CTk):
             row=row, column=0, columnspan=2, sticky="w", pady=6
         )
         row += 1
+        ctk.CTkCheckBox(parent, text="Auto EXIF rotation", variable=self.auto_exif_rotate).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=6
+        )
+        row += 1
+        ctk.CTkCheckBox(parent, text="Use alpha as mask (PNG/logos)", variable=self.use_alpha_mask).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=6
+        )
+        row += 1
+        ctk.CTkCheckBox(
+            parent,
+            text="Auto-scale contour epsilon to image size",
+            variable=self.auto_scale_epsilon,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+        row += 1
         ctk.CTkLabel(
             parent,
-            text="Tip: external = outer outlines only. Increase Min area to drop speckle.",
+            text="Tip: Contrast 2–4 helps photos. Alpha mask ignores threshold for transparent PNGs.",
             justify="left",
             anchor="w",
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
@@ -519,9 +544,12 @@ class AutoPaintGui(ctk.CTk):
         file_path = filedialog.askopenfilename(
             title="Select source file",
             filetypes=[
-                ("Supported files", "*.png *.jpg *.jpeg *.bmp *.webp *.svg *.gcode *.nc *.tap"),
+                (
+                    "Supported files",
+                    f"{RASTER_FILE_GLOB} *.svg *.gcode *.nc *.tap",
+                ),
                 ("Vector paths", "*.svg *.gcode *.nc *.tap"),
-                ("Image files", "*.png *.jpg *.jpeg *.bmp *.webp"),
+                ("Image files", RASTER_FILE_GLOB),
                 ("All files", "*.*"),
             ],
         )
@@ -539,8 +567,8 @@ class AutoPaintGui(ctk.CTk):
             return "No source loaded."
         suffix = Path(path).suffix.lower()
         if suffix in RASTER_SUFFIXES:
-            return "Raster image: Path tuning + Raster tab both affect contour preview and drawing."
-        if suffix in {".svg", ".gcode", ".nc", ".tap"}:
+            return "Raster image: import uses EXIF/alpha/CLAHE normalization before tracing."
+        if suffix in VECTOR_SUFFIXES:
             return f"Vector file ({suffix}): Path tuning controls import sampling and path splits."
         return "Unknown source type."
 
@@ -567,6 +595,10 @@ class AutoPaintGui(ctk.CTk):
             self.morph_open,
             self.min_contour_area,
             self.contour_scope,
+            self.auto_exif_rotate,
+            self.use_alpha_mask,
+            self.auto_scale_epsilon,
+            self.clahe_clip,
             self.vector_step,
             self.vector_min_points,
             self.vector_jump_threshold,
@@ -597,8 +629,11 @@ class AutoPaintGui(ctk.CTk):
         if replan and self._is_raster_source():
             try:
                 processing = self._build_processing()
-                gray = load_image_grayscale(processing.image_path)
-                mask = build_binary_mask_from_gray(gray, processing)
+                prepared = prepare_raster_image(
+                    processing.image_path,
+                    auto_exif_rotate=processing.auto_exif_rotate,
+                )
+                mask = build_binary_mask_from_prepared(prepared, processing)
                 self._show_mask_preview(mask)
             except Exception:
                 pass
@@ -632,6 +667,8 @@ class AutoPaintGui(ctk.CTk):
             mode = self.mode.get()
             self._update_previews(plan, mode=mode)
             self._update_toolpath_stats(plan)
+            for warning in plan.import_warnings:
+                self._append_log(f"Import: {warning}")
 
             def finish() -> None:
                 self._set_pipeline_step("plan", "done")
@@ -689,6 +726,10 @@ class AutoPaintGui(ctk.CTk):
             morph_open_kernel=max(0, int(round(self.morph_open.get()))),
             contour_mode=scope,
             min_contour_area=max(0, int(round(self.min_contour_area.get()))),
+            auto_exif_rotate=self.auto_exif_rotate.get(),
+            use_alpha_mask=self.use_alpha_mask.get(),
+            clahe_clip_limit=max(0.0, float(self.clahe_clip.get())),
+            auto_scale_epsilon=self.auto_scale_epsilon.get(),
         )
 
     def _build_draw(self) -> DrawConfig:
@@ -736,6 +777,8 @@ class AutoPaintGui(ctk.CTk):
                     f"{plan.polyline_count} polylines, {plan.segment_count} segments, "
                     f"{plan.command_count} tool commands."
                 )
+                for warning in plan.import_warnings:
+                    self._append_log(f"Import: {warning}")
                 self._update_previews(plan, mode=mode)
                 self._update_toolpath_stats(plan)
                 self._set_busy(False, "Plan ready")
@@ -782,6 +825,8 @@ class AutoPaintGui(ctk.CTk):
                     f"Starting draw in {mode} mode from {plan.source_kind} "
                     f"(dry_run={draw_conf.dry_run})..."
                 )
+                for warning in plan.import_warnings:
+                    self._append_log(f"Import: {warning}")
                 if mode == "segments" and plan.segment_count == 0 and plan.polyline_count > 0:
                     self._append_log("Segments unavailable for this source, using contour paths.")
                 if selected_rect is None:

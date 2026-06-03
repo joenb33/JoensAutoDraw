@@ -23,13 +23,18 @@ from autopaint.validation import (
     validate_plan_has_draw_content,
     validate_target_rect,
 )
-from autopaint.image_processing import build_binary_mask_from_gray, load_image_grayscale
+from autopaint.image_processing import (
+    VECTOR_SUFFIXES,
+    build_binary_mask_from_prepared,
+    prepare_raster_image,
+)
 from autopaint.types import Rect
 from autopaint.planner import (
     mask_to_contour_polylines,
     mask_to_segments,
     render_polyline_preview,
     render_segment_preview,
+    scaled_contour_epsilon,
     simplify_polylines,
     tune_polylines_for_draw,
 )
@@ -53,15 +58,26 @@ class PlanResult:
     polylines: Any
     segments: Any
     tool_commands: Any
+    import_warnings: tuple[str, ...] = ()
 
 
 def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanResult:
     suffix = processing.image_path.suffix.lower()
-    if suffix in {".svg", ".gcode", ".nc", ".tap"}:
+    if suffix in VECTOR_SUFFIXES:
         return _create_vector_plan(processing=processing)
 
-    gray = load_image_grayscale(processing.image_path)
-    mask = build_binary_mask_from_gray(gray, processing)
+    prepared = prepare_raster_image(
+        processing.image_path,
+        auto_exif_rotate=processing.auto_exif_rotate,
+    )
+    gray = prepared.gray
+    mask = build_binary_mask_from_prepared(prepared, processing)
+    effective_epsilon = scaled_contour_epsilon(
+        contour_epsilon,
+        width=gray.shape[1],
+        height=gray.shape[0],
+        auto_scale=processing.auto_scale_epsilon,
+    )
 
     segments = mask_to_segments(
         mask=mask, sample_step=processing.sample_step, max_line_gap=processing.max_line_gap
@@ -72,7 +88,7 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         contour_mode=processing.contour_mode,
         min_contour_area=processing.min_contour_area,
     )
-    polylines = simplify_polylines(raw_polylines, epsilon=contour_epsilon)
+    polylines = simplify_polylines(raw_polylines, epsilon=effective_epsilon)
     polylines = tune_polylines_for_draw(
         polylines,
         min_points=processing.vector_min_polyline_points,
@@ -97,6 +113,7 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         polylines=polylines,
         segments=segments,
         tool_commands=contour_commands,
+        import_warnings=prepared.warnings,
     )
 
 
