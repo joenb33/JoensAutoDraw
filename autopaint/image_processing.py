@@ -130,6 +130,9 @@ def _blur_kernel_size(config: ProcessingConfig) -> int:
 
 
 def build_binary_mask_from_gray(gray: np.ndarray, config: ProcessingConfig) -> np.ndarray:
+    if config.trace_mode == "sketch":
+        return build_sketch_mask_from_gray(gray, config)
+
     gray = enhance_gray(gray, config)
     blur_kernel = _blur_kernel_size(config)
     blurred = cv2.GaussianBlur(gray, (blur_kernel, blur_kernel), 0)
@@ -147,6 +150,26 @@ def build_binary_mask_from_gray(gray: np.ndarray, config: ProcessingConfig) -> n
 
     return apply_morphology(
         binary,
+        close_kernel=config.morph_close_kernel,
+        open_kernel=config.morph_open_kernel,
+    )
+
+
+def build_sketch_mask_from_gray(gray: np.ndarray, config: ProcessingConfig) -> np.ndarray:
+    """Edge-based sketch trace (LightBurn-style local contrast edges)."""
+    gray = enhance_gray(gray, config)
+    blur_kernel = _blur_kernel_size(config)
+    blurred = cv2.GaussianBlur(gray, (blur_kernel, blur_kernel), 0)
+
+    low = max(1, int(config.canny_low))
+    high = max(low + 1, int(config.canny_high))
+    edges = cv2.Canny(blurred, threshold1=low, threshold2=high)
+
+    if config.invert:
+        edges = cv2.bitwise_not(edges)
+
+    return apply_morphology(
+        edges,
         close_kernel=config.morph_close_kernel,
         open_kernel=config.morph_open_kernel,
     )

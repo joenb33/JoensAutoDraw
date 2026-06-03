@@ -84,3 +84,31 @@ def test_scaled_contour_epsilon_grows_with_image_size() -> None:
 
     assert large > small
     assert scaled_contour_epsilon(1.2, width=1200, height=1200, auto_scale=False) == pytest.approx(1.2)
+
+
+def test_sketch_trace_builds_edge_mask(tmp_path: Path) -> None:
+    from autopaint.image_processing import build_sketch_mask_from_gray, prepare_raster_image
+
+    path = tmp_path / "shape.png"
+    gray = np.zeros((80, 80), dtype=np.uint8)
+    gray[20:60, 20:60] = 220
+    Image.fromarray(gray, mode="L").save(path)
+    prepared = prepare_raster_image(path)
+    config = ProcessingConfig(image_path=path, trace_mode="sketch", canny_low=20, canny_high=80)
+
+    mask = build_sketch_mask_from_gray(prepared.gray, config)
+
+    assert mask.shape == prepared.gray.shape
+    assert mask.max() == 255
+    assert int(mask.sum()) > 0
+
+
+def test_create_plan_sketch_mode(temp_square_image) -> None:
+    from autopaint.pipeline import create_plan
+
+    plan = create_plan(
+        processing=ProcessingConfig(image_path=temp_square_image, trace_mode="sketch"),
+        contour_epsilon=1.2,
+    )
+
+    assert plan.polyline_count >= 1

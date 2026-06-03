@@ -190,6 +190,24 @@ def parse_args() -> argparse.Namespace:
         help="Disable contour epsilon scaling for large images.",
     )
     parser.add_argument(
+        "--trace-mode",
+        choices=("threshold", "sketch"),
+        default="threshold",
+        help="threshold = brightness mask, sketch = Canny edge trace for photos.",
+    )
+    parser.add_argument(
+        "--canny-low",
+        type=_int_min(1),
+        default=40,
+        help="Sketch trace: lower Canny threshold.",
+    )
+    parser.add_argument(
+        "--canny-high",
+        type=_int_min(2),
+        default=120,
+        help="Sketch trace: upper Canny threshold.",
+    )
+    parser.add_argument(
         "--mode",
         choices=("segments", "contour"),
         default="contour",
@@ -248,6 +266,9 @@ def main() -> int:
         use_alpha_mask=not args.no_alpha_mask,
         clahe_clip_limit=args.clahe,
         auto_scale_epsilon=not args.no_auto_scale_epsilon,
+        trace_mode=args.trace_mode,
+        canny_low=args.canny_low,
+        canny_high=args.canny_high,
     )
     draw_conf = DrawConfig(
         move_duration=args.speed,

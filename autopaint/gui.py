@@ -30,6 +30,11 @@ from autopaint.types import Rect
 
 UPDATE_CHECK_DELAY_MS = 1500
 LIVE_PREVIEW_DEBOUNCE_MS = 250
+SIDEBAR_WIDTH = 360
+PREVIEW_MIN_SIZE = 300
+PREVIEW_MAX_SIZE = 520
+ACCENT_COLOR = "#4ea1ff"
+SUCCESS_COLOR = "#22c55e"
 
 
 class AutoPaintGui(ctk.CTk):
@@ -39,8 +44,8 @@ class AutoPaintGui(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title(f"JoensAutoDraw v{__version__}")
-        self.geometry("980x680")
-        self.minsize(900, 620)
+        self.geometry("1280x820")
+        self.minsize(1100, 720)
 
         self.image_path = ctk.StringVar(value="")
         self.threshold = ctk.IntVar(value=140)
@@ -71,11 +76,15 @@ class AutoPaintGui(ctk.CTk):
         self.use_alpha_mask = ctk.BooleanVar(value=True)
         self.auto_scale_epsilon = ctk.BooleanVar(value=True)
         self.clahe_clip = ctk.DoubleVar(value=0.0)
+        self.trace_mode = ctk.StringVar(value="threshold")
+        self.canny_low = ctk.IntVar(value=40)
+        self.canny_high = ctk.IntVar(value=120)
 
         self._busy = False
         self._last_plan = None
         self._selected_rect: Rect | None = None
         self._preview_images: list[ctk.CTkImage] = []
+        self._preview_canvas_size = PREVIEW_MIN_SIZE
         self._slider_value_labels: dict[str, ctk.CTkLabel] = {}
         self._pipeline_labels: dict[str, ctk.CTkLabel] = {}
         self._toolpath_stats_label: ctk.CTkLabel | None = None
@@ -152,153 +161,218 @@ class AutoPaintGui(ctk.CTk):
         schedule_apply_update(downloaded, pid=os.getpid())
 
     def _build_layout(self) -> None:
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=0, minsize=SIDEBAR_WIDTH)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        header = ctk.CTkFrame(self, corner_radius=12)
-        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
-        header.grid_columnconfigure(0, weight=1)
+        sidebar = ctk.CTkScrollableFrame(self, width=SIDEBAR_WIDTH, corner_radius=0, fg_color="transparent")
+        sidebar.grid(row=0, column=0, sticky="nsew", padx=(16, 8), pady=16)
+        sidebar.grid_columnconfigure((0, 1, 2), weight=1)
+
         ctk.CTkLabel(
-            header,
-            text="AutoPaint Control Center",
-            font=ctk.CTkFont(size=24, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=14, pady=12)
+            sidebar,
+            text="JoensAutoDraw",
+            font=ctk.CTkFont(size=22, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        ctk.CTkLabel(
+            sidebar,
+            text="1. Source  →  2. Tune  →  3. Area  →  4. Draw",
+            font=ctk.CTkFont(size=12),
+            text_color="#9ca3af",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 12))
 
-        body = ctk.CTkFrame(self, corner_radius=12)
-        body.grid(row=1, column=0, sticky="nsew", padx=16, pady=8)
-        body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2)
-        body.grid_rowconfigure(0, weight=1)
-
-        left = ctk.CTkScrollableFrame(body, corner_radius=12)
-        left.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
-        left.grid_columnconfigure(1, weight=1)
-
-        self._add_path_controls(left)
-        tabs = ctk.CTkTabview(left, corner_radius=10)
-        tabs.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 6))
-        raster_tab = tabs.add("Raster")
-        vector_tab = tabs.add("Path tuning")
+        self._add_path_controls(sidebar)
+        tabs = ctk.CTkTabview(sidebar, corner_radius=10)
+        tabs.grid(row=3, column=0, sticky="ew", pady=(8, 6))
+        raster_tab = tabs.add("Trace")
+        path_tab = tabs.add("Path")
         raster_tab.grid_columnconfigure(1, weight=1)
-        vector_tab.grid_columnconfigure(1, weight=1)
+        path_tab.grid_columnconfigure(1, weight=1)
         self._add_processing_controls(raster_tab)
-        self._add_vector_controls(vector_tab)
-        self._vector_tab_hint = ctk.CTkLabel(
-            left,
+        self._add_vector_controls(path_tab)
+        self._source_hint_label = ctk.CTkLabel(
+            sidebar,
             text="",
             justify="left",
             anchor="w",
-            wraplength=420,
+            wraplength=SIDEBAR_WIDTH - 24,
+            text_color="#9ca3af",
+            font=ctk.CTkFont(size=11),
         )
-        self._vector_tab_hint.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 6))
-        self._add_draw_controls(left)
+        self._source_hint_label.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        self._add_draw_controls(sidebar)
 
-        right = ctk.CTkFrame(body, corner_radius=12)
-        right.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
-        right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(3, weight=1)
-        right.grid_rowconfigure(5, weight=2)
+        main = ctk.CTkFrame(self, corner_radius=12)
+        main.grid(row=0, column=1, sticky="nsew", padx=(8, 16), pady=16)
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(0, weight=1)
+        main.grid_rowconfigure(1, weight=0)
 
+        preview_shell = ctk.CTkFrame(main, corner_radius=12)
+        preview_shell.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 8))
+        preview_shell.grid_columnconfigure((0, 1), weight=1, uniform="preview")
+        preview_shell.grid_rowconfigure(1, weight=1)
+
+        header_row = ctk.CTkFrame(preview_shell, fg_color="transparent")
+        header_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 8))
+        header_row.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            right,
-            text="Run Actions",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
-
-        self.status_label = ctk.CTkLabel(right, text="Ready", anchor="w")
-        self.status_label.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-
-        pipeline_panel = ctk.CTkFrame(right, corner_radius=10)
-        pipeline_panel.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
-        pipeline_panel.grid_columnconfigure(0, weight=1)
+            header_row,
+            text="Live preview",
+            font=ctk.CTkFont(size=20, weight="bold"),
+        ).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
-            pipeline_panel,
-            text="Workflow",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+            header_row,
+            text="Inspect mask and toolpath before drawing",
+            font=ctk.CTkFont(size=12),
+            text_color="#9ca3af",
+        ).grid(row=1, column=0, sticky="w")
+
+        self.status_label = ctk.CTkLabel(
+            header_row,
+            text="Ready",
+            anchor="e",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        self.status_label.grid(row=0, column=1, rowspan=2, sticky="e")
+
+        mask_card = ctk.CTkFrame(preview_shell, corner_radius=10)
+        mask_card.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 12))
+        mask_card.grid_rowconfigure(1, weight=1)
+        mask_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(mask_card, text="Mask / edges", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(8, 4)
+        )
+        self.mask_preview = ctk.CTkLabel(
+            mask_card,
+            text="Load an image to preview",
+            fg_color=("#1a1a1a", "#111111"),
+            corner_radius=8,
+        )
+        self.mask_preview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        path_card = ctk.CTkFrame(preview_shell, corner_radius=10)
+        path_card.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=(0, 12))
+        path_card.grid_rowconfigure(1, weight=1)
+        path_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(path_card, text="Toolpath", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(8, 4)
+        )
+        self.plan_preview = ctk.CTkLabel(
+            path_card,
+            text="Toolpath appears after tuning",
+            fg_color=("#1a1a1a", "#111111"),
+            corner_radius=8,
+        )
+        self.plan_preview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        self._toolpath_stats_label = ctk.CTkLabel(
+            preview_shell,
+            text="Toolpath stats: waiting for source",
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=12),
+            text_color="#cbd5e1",
+        )
+        self._toolpath_stats_label.grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12)
+        )
+        preview_shell.bind("<Configure>", self._on_preview_shell_resize)
+
+        action_shell = ctk.CTkFrame(main, corner_radius=12)
+        action_shell.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        action_shell.grid_columnconfigure(0, weight=1)
+
+        workflow_row = ctk.CTkFrame(action_shell, fg_color="transparent")
+        workflow_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        workflow_row.grid_columnconfigure(tuple(range(4)), weight=1)
         for idx, (key, text) in enumerate(
             [
-                ("import", "1) Import source"),
-                ("plan", "2) Build plan"),
-                ("area", "3) Select area"),
-                ("draw", "4) Draw"),
-            ],
-            start=1,
+                ("import", "Import"),
+                ("plan", "Tune"),
+                ("area", "Area"),
+                ("draw", "Draw"),
+            ]
         ):
-            label = ctk.CTkLabel(pipeline_panel, text=f"{text}: waiting", anchor="w")
-            label.grid(row=idx, column=0, sticky="ew", padx=8, pady=2)
+            frame = ctk.CTkFrame(workflow_row, corner_radius=8)
+            frame.grid(row=0, column=idx, sticky="ew", padx=4)
+            label = ctk.CTkLabel(frame, text=f"{text}\nwaiting", anchor="center", justify="center")
+            label.pack(fill="both", expand=True, padx=8, pady=8)
             self._pipeline_labels[key] = label
 
-        log_box = ctk.CTkTextbox(right, corner_radius=10)
-        log_box.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        log_box.insert("end", "Welcome to AutoPaint.\nStart with DRY RUN checked.\n")
-        log_box.insert(
-            "end",
-            f"Emergency stop backends: {esc_backend_description()}.\n",
-        )
-        log_box.configure(state="disabled")
-        self.log_box = log_box
-
-        button_bar = ctk.CTkFrame(right, fg_color="transparent")
-        button_bar.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
-        button_bar.grid_columnconfigure((0, 1, 2), weight=1)
-
-        self.plan_button = ctk.CTkButton(
-            button_bar, text="Build Plan", command=self.on_build_plan
-        )
-        self.plan_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-
-        self.draw_button = ctk.CTkButton(
-            button_bar, text="Draw Now", command=self.on_draw_now
-        )
-        self.draw_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        button_row = ctk.CTkFrame(action_shell, fg_color="transparent")
+        button_row.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        button_row.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.area_button = ctk.CTkButton(
-            button_bar, text="Select Area", command=self.on_select_area
+            button_row,
+            text="Select draw area",
+            command=self.on_select_area,
+            fg_color="#334155",
+            hover_color="#475569",
         )
-        self.area_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        self.area_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
-        preview_panel = ctk.CTkFrame(right, corner_radius=10)
-        preview_panel.grid(row=5, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        preview_panel.grid_columnconfigure((0, 1), weight=1)
-        preview_panel.grid_rowconfigure(1, weight=1)
-        preview_panel.grid_rowconfigure(2, weight=0)
-
-        ctk.CTkLabel(preview_panel, text="Binary mask (live)").grid(
-            row=0, column=0, sticky="w", padx=8, pady=(8, 4)
+        self.plan_button = ctk.CTkButton(
+            button_row,
+            text="Refresh plan",
+            command=self.on_build_plan,
+            fg_color="#334155",
+            hover_color="#475569",
         )
-        ctk.CTkLabel(preview_panel, text="Toolpath preview (live)").grid(
-            row=0, column=1, sticky="w", padx=8, pady=(8, 4)
-        )
+        self.plan_button.grid(row=0, column=1, sticky="ew", padx=6)
 
-        self.mask_preview = ctk.CTkLabel(preview_panel, text="No preview yet")
-        self.mask_preview.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        self.plan_preview = ctk.CTkLabel(preview_panel, text="No preview yet")
-        self.plan_preview.grid(row=1, column=1, sticky="nsew", padx=8, pady=(0, 8))
-        stats = ctk.CTkLabel(preview_panel, text="Toolpath stats: n/a", anchor="w", justify="left")
-        stats.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
-        self._toolpath_stats_label = stats
+        self.draw_button = ctk.CTkButton(
+            button_row,
+            text="Draw now",
+            command=self.on_draw_now,
+            height=42,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=SUCCESS_COLOR,
+            hover_color="#16a34a",
+        )
+        self.draw_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
+        self.log_box = ctk.CTkTextbox(action_shell, height=110, corner_radius=10)
+        self.log_box.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self.log_box.insert("end", "Welcome to JoensAutoDraw.\nKeep Dry run enabled until the preview looks right.\n")
+        self.log_box.insert("end", f"Emergency stop: {esc_backend_description()}.\n")
+        self.log_box.configure(state="disabled")
+
         self._set_pipeline_step("import", "waiting")
         self._set_pipeline_step("plan", "waiting")
         self._set_pipeline_step("area", "waiting")
         self._set_pipeline_step("draw", "waiting")
 
+    def _on_preview_shell_resize(self, event) -> None:
+        if event.width < 100:
+            return
+        per_panel = max(PREVIEW_MIN_SIZE, min(PREVIEW_MAX_SIZE, (event.width - 48) // 2))
+        if abs(per_panel - self._preview_canvas_size) < 24:
+            return
+        self._preview_canvas_size = per_panel
+        if self._last_plan is not None:
+            self._update_previews(self._last_plan, mode=self.mode.get())
+
+    def _pipeline_step_title(self, step_key: str) -> str:
+        return {
+            "import": "Import",
+            "plan": "Tune",
+            "area": "Area",
+            "draw": "Draw",
+        }.get(step_key, step_key)
+
     def _set_pipeline_step(self, step_key: str, state: str) -> None:
         label = self._pipeline_labels.get(step_key)
         if label is None:
             return
-        prefix_map = {
-            "import": "1) Import source",
-            "plan": "2) Build plan",
-            "area": "3) Select area",
-            "draw": "4) Draw",
-        }
-        text = f"{prefix_map.get(step_key, step_key)}: {state}"
+        title = self._pipeline_step_title(step_key)
+        text = f"{title}\n{state}"
         color_map = {
             "waiting": "#9ca3af",
             "ready": "#fbbf24",
             "done": "#22c55e",
-            "running": "#60a5fa",
+            "running": ACCENT_COLOR,
             "error": "#f87171",
         }
         label.configure(text=text, text_color=color_map.get(state, "#e5e7eb"))
@@ -355,22 +429,33 @@ class AutoPaintGui(ctk.CTk):
 
     def _add_path_controls(self, parent: ctk.CTkScrollableFrame) -> None:
         row = 0
-        ctk.CTkLabel(parent, text="Input", font=ctk.CTkFont(size=18, weight="bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(6, 6)
+        ctk.CTkLabel(parent, text="Source file", font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=row, column=0, sticky="w", pady=(4, 8)
         )
         row += 1
 
-        ctk.CTkEntry(parent, textvariable=self.image_path).grid(
-            row=row, column=0, sticky="ew", padx=(0, 8), pady=4
-        )
-        ctk.CTkButton(parent, text="Browse", width=110, command=self.on_browse).grid(
-            row=row, column=1, sticky="e", pady=4
-        )
+        path_row = ctk.CTkFrame(parent, fg_color="transparent")
+        path_row.grid(row=row, column=0, sticky="ew", pady=(0, 4))
+        path_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(path_row, textvariable=self.image_path).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(path_row, text="Browse", width=90, command=self.on_browse).grid(row=0, column=1)
 
     def _add_processing_controls(self, parent: ctk.CTkScrollableFrame) -> None:
         row = 0
 
+        ctk.CTkLabel(parent, text="Trace mode").grid(row=row, column=0, sticky="w", pady=4)
+        ctk.CTkSegmentedButton(
+            parent,
+            values=["threshold", "sketch"],
+            variable=self.trace_mode,
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        row += 1
+
         self._add_slider(parent, row, "Threshold", self.threshold, 0, 255)
+        row += 1
+        self._add_slider(parent, row, "Canny low", self.canny_low, 1, 255)
+        row += 1
+        self._add_slider(parent, row, "Canny high", self.canny_high, 2, 255)
         row += 1
         self._add_slider(parent, row, "Blur (odd)", self.blur, 1, 21)
         row += 1
@@ -421,9 +506,10 @@ class AutoPaintGui(ctk.CTk):
         row += 1
         ctk.CTkLabel(
             parent,
-            text="Tip: Contrast 2–4 helps photos. Alpha mask ignores threshold for transparent PNGs.",
+            text="Threshold = flat art. Sketch = photos/handwriting (edge trace).",
             justify="left",
             anchor="w",
+            wraplength=SIDEBAR_WIDTH - 40,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
 
     def _add_vector_controls(self, parent) -> None:
@@ -451,9 +537,9 @@ class AutoPaintGui(ctk.CTk):
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
     def _add_draw_controls(self, parent: ctk.CTkScrollableFrame) -> None:
-        row = 3
-        ctk.CTkLabel(parent, text="Drawing", font=ctk.CTkFont(size=18, weight="bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(18, 6)
+        row = 5
+        ctk.CTkLabel(parent, text="Draw", font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(12, 8)
         )
         row += 1
 
@@ -573,8 +659,8 @@ class AutoPaintGui(ctk.CTk):
         return "Unknown source type."
 
     def _update_source_hint(self) -> None:
-        if hasattr(self, "_vector_tab_hint"):
-            self._vector_tab_hint.configure(text=self._source_kind_label())
+        if hasattr(self, "_source_hint_label"):
+            self._source_hint_label.configure(text=self._source_kind_label())
 
     def _is_raster_source(self) -> bool:
         path = self.image_path.get().strip()
@@ -599,6 +685,9 @@ class AutoPaintGui(ctk.CTk):
             self.use_alpha_mask,
             self.auto_scale_epsilon,
             self.clahe_clip,
+            self.trace_mode,
+            self.canny_low,
+            self.canny_high,
             self.vector_step,
             self.vector_min_points,
             self.vector_jump_threshold,
@@ -680,20 +769,21 @@ class AutoPaintGui(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _array_to_preview_image(self, array: np.ndarray) -> ctk.CTkImage:
-        canvas_size = 280
+    def _array_to_preview_image(self, array: np.ndarray, canvas_size: int | None = None) -> ctk.CTkImage:
+        size = canvas_size or self._preview_canvas_size
+        size = max(PREVIEW_MIN_SIZE, min(PREVIEW_MAX_SIZE, size))
         rgb = cv2.cvtColor(array, cv2.COLOR_GRAY2RGB)
         src_h, src_w = rgb.shape[:2]
-        scale = min(canvas_size / max(1, src_w), canvas_size / max(1, src_h))
+        scale = min(size / max(1, src_w), size / max(1, src_h))
         dst_w = max(1, int(round(src_w * scale)))
         dst_h = max(1, int(round(src_h * scale)))
         resized = cv2.resize(rgb, (dst_w, dst_h), interpolation=cv2.INTER_NEAREST)
-        canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
-        x = (canvas_size - dst_w) // 2
-        y = (canvas_size - dst_h) // 2
+        canvas = np.zeros((size, size, 3), dtype=np.uint8)
+        x = (size - dst_w) // 2
+        y = (size - dst_h) // 2
         canvas[y : y + dst_h, x : x + dst_w] = resized
         pil = Image.fromarray(canvas)
-        return ctk.CTkImage(light_image=pil, dark_image=pil, size=(280, 280))
+        return ctk.CTkImage(light_image=pil, dark_image=pil, size=(size, size))
 
     def _show_mask_preview(self, mask: np.ndarray) -> None:
         mask_img = self._array_to_preview_image(mask)
@@ -711,6 +801,9 @@ class AutoPaintGui(ctk.CTk):
         scope = self.contour_scope.get()
         if scope not in {"external", "all", "largest"}:
             scope = "external"
+        trace = self.trace_mode.get()
+        if trace not in {"threshold", "sketch"}:
+            trace = "threshold"
         return ProcessingConfig(
             image_path=Path(self.image_path.get()),
             threshold=int(round(self.threshold.get())),
@@ -730,6 +823,9 @@ class AutoPaintGui(ctk.CTk):
             use_alpha_mask=self.use_alpha_mask.get(),
             clahe_clip_limit=max(0.0, float(self.clahe_clip.get())),
             auto_scale_epsilon=self.auto_scale_epsilon.get(),
+            trace_mode=trace,
+            canny_low=max(1, int(round(self.canny_low.get()))),
+            canny_high=max(2, int(round(self.canny_high.get()))),
         )
 
     def _build_draw(self) -> DrawConfig:

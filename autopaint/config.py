@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Literal
 
 ContourMode = Literal["external", "all", "largest"]
+TraceMode = Literal["threshold", "sketch"]
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class ProcessingConfig:
     use_alpha_mask: bool = True
     clahe_clip_limit: float = 0.0
     auto_scale_epsilon: bool = True
+    trace_mode: TraceMode = "threshold"
+    canny_low: int = 40
+    canny_high: int = 120
 
 
 @dataclass(frozen=True)
