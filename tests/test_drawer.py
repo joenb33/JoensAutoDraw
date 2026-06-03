@@ -7,6 +7,7 @@ from autopaint.drawer import (
     BoundsViolation,
     RasterSize,
     _build_fit_transform,
+    _drag_cursor,
     _expand_float_segment,
     _polyline_to_screen_pixel_path,
     map_to_screen,
@@ -125,6 +126,30 @@ def test_simulate_tool_commands_counts_draw_pixels() -> None:
     assert stats.draw_pixel_events > 10
     assert stats.stroke_count == 1
     assert stats.estimated_seconds > 0
+
+
+def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"fast": 0, "moveTo": 0}
+
+    def _fast(x: int, y: int) -> None:
+        calls["fast"] += 1
+
+    def _move_to(*args: object, **kwargs: object) -> None:
+        calls["moveTo"] += 1
+
+    monkeypatch.setattr("autopaint.drawer._move_cursor_fast", _fast)
+    monkeypatch.setattr("autopaint.drawer.pyautogui.moveTo", _move_to)
+
+    draw_config = DrawConfig(
+        compatibility_mode=True,
+        move_duration=0.0,
+        step_pause_seconds=0.0,
+        countdown_seconds=0,
+    )
+    _drag_cursor(10, 20, draw_config)
+
+    assert calls["fast"] == 1
+    assert calls["moveTo"] == 0
 
 
 def test_contour_stroke_survives_batch_decimation() -> None:

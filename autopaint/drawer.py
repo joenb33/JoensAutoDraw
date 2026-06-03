@@ -331,20 +331,14 @@ def _decimate_points_for_compatibility(
     return _prepare_drag_points(points, draw_config)
 
 
-def _compat_step_pause(draw_config: DrawConfig) -> float:
-    if not draw_config.compatibility_mode:
-        return draw_config.step_pause_seconds
-    return max(draw_config.step_pause_seconds, 0.004)
-
-
 def _drag_cursor(x: int, y: int, draw_config: DrawConfig) -> None:
-    pause = _compat_step_pause(draw_config)
     if draw_config.compatibility_mode:
-        duration = max(pause, 0.001)
-        pyautogui.moveTo(x, y, duration=duration, _pause=False)
+        _move_cursor_fast(x, y)
+        if draw_config.step_pause_seconds > 0:
+            _sleep_if_needed(min(draw_config.step_pause_seconds, 0.001))
         return
     _move_cursor_fast(x, y)
-    _sleep_if_needed(pause)
+    _sleep_if_needed(draw_config.step_pause_seconds)
 
 
 def draw_segments(
