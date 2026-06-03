@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from autopaint import versioning
 from autopaint.updater import (
+    build_update_helper_script,
     fetch_latest_update,
     is_newer_version,
     parse_version,
@@ -59,3 +61,17 @@ def test_fetch_latest_update_returns_info(mock_urlopen, mock_json_load, _frozen)
 @patch("autopaint.updater.is_frozen_app", return_value=False)
 def test_fetch_latest_update_skips_when_not_frozen(_frozen) -> None:
     assert fetch_latest_update() is None
+
+
+def test_build_update_helper_script_waits_for_pid_and_retries_replace() -> None:
+    script = build_update_helper_script(
+        pid=12345,
+        new_exe=Path(r"C:\Temp\JoensAutoDraw.exe.0.2.0.new"),
+        target=Path(r"C:\Apps\JoensAutoDraw.exe"),
+    )
+
+    assert 'PID eq 12345' in script
+    assert "goto waitpid" in script
+    assert "goto replacetry" in script
+    assert r'set "NEW=C:\Temp\JoensAutoDraw.exe.0.2.0.new"' in script
+    assert r'set "TARGET=C:\Apps\JoensAutoDraw.exe"' in script

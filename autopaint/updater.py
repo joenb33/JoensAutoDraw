@@ -91,21 +91,54 @@ def download_update(info: UpdateInfo, timeout: float = 180.0) -> Path:
     return destination
 
 
-def schedule_apply_update(new_exe: Path) -> None:
+def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
+    """Batch script that waits for the running app to exit before swapping the exe."""
+    return "\n".join(
+        [
+            "@echo off",
+            "setlocal EnableExtensions",
+            "set /a WAIT=0",
+            ":waitpid",
+            f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+            "if %ERRORLEVEL%==0 (",
+            "  timeout /t 1 /nobreak >nul",
+            "  set /a WAIT+=1",
+            "  if %WAIT% lss 45 goto waitpid",
+            ")",
+            "rem Allow PyInstaller one-file temp extraction to finish cleanup",
+            "timeout /t 2 /nobreak >nul",
+            f'set "NEW={new_exe}"',
+            f'set "TARGET={target}"',
+            "set /a RETRY=0",
+            ":replacetry",
+            'move /Y "%NEW%" "%TARGET%" >nul',
+            "if %ERRORLEVEL% neq 0 (",
+            "  set /a RETRY+=1",
+            "  if %RETRY% lss 20 (",
+            "    timeout /t 1 /nobreak >nul",
+            "    goto replacetry",
+            "  )",
+            "  exit /b 1",
+            ")",
+            "rem Brief pause so Windows finishes flushing the replaced executable",
+            "timeout /t 1 /nobreak >nul",
+            'start "" "%TARGET%"',
+            "del \"%~f0\"",
+        ]
+    )
+
+
+def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
     current = current_exe_path()
     if current is None:
         raise RuntimeError("Updates can only be applied to the packaged executable.")
 
     helper = Path(tempfile.gettempdir()) / "JoensAutoDraw-update.bat"
     helper.write_text(
-        "\n".join(
-            [
-                "@echo off",
-                "ping 127.0.0.1 -n 2 >nul",
-                f'move /Y "{new_exe}" "{current}"',
-                f'start "" "{current}"',
-                "del \"%~f0\"",
-            ]
+        build_update_helper_script(
+            pid=pid if pid is not None else os.getpid(),
+            new_exe=new_exe.resolve(),
+            target=current,
         ),
         encoding="utf-8",
     )

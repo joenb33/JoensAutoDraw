@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 import tkinter as tk
@@ -119,7 +120,7 @@ class AutoPaintGui(ctk.CTk):
                             f"Version v{update.version} is ready.\n"
                             "Restart JoensAutoDraw now to apply the update?",
                         ):
-                            schedule_apply_update(downloaded)
+                            self.after(0, lambda: self._apply_update_and_restart(downloaded))
                         else:
                             self._append_log("Update will apply on next manual restart.")
 
@@ -130,6 +131,15 @@ class AutoPaintGui(ctk.CTk):
             self.after(0, prompt)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_update_and_restart(self, downloaded: Path) -> None:
+        self._append_log("Applying update and restarting...")
+        try:
+            self.quit()
+            self.destroy()
+        except Exception:
+            pass
+        schedule_apply_update(downloaded, pid=os.getpid())
 
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=1)
