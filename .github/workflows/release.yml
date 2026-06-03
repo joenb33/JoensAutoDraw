@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - run: python -m pytest tests/ -v
+
+  build:
+    name: Build Windows .exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Build executable
+        run: pyinstaller --noconfirm JoensAutoDraw.spec
+
+      - name: Create release zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/JoensAutoDraw.exe -DestinationPath dist/JoensAutoDraw-win64.zip
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/JoensAutoDraw.exe
+            dist/JoensAutoDraw-win64.zip

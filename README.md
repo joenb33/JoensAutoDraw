@@ -1,38 +1,115 @@
-# AutoPaint
+<div align="center">
 
-**AutoPaint** turns images and vector files into mouse-drawn strokes inside a screen area you choose. Point it at MS Paint, a browser canvas, or any app that draws with the left mouse button — AutoPaint plans the paths and executes them for you.
+# JoensAutoDraw
 
-Built as a **safety-first** desktop tool for Windows: dry-run by default in the GUI, preflight checks before drawing, multiple emergency stops, and strict bounds validation.
+**Turn any image or vector file into real mouse-drawn strokes — anywhere on your Windows screen.**
 
-> **Use responsibly.** Only automate targets where it is allowed. You are responsible for complying with app terms and local laws.
+[![CI](https://github.com/joenb33/JoensAutoDraw/actions/workflows/ci.yml/badge.svg)](https://github.com/joenb33/JoensAutoDraw/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/joenb33/JoensAutoDraw?label=download)](https://github.com/joenb33/JoensAutoDraw/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows)](https://github.com/joenb33/JoensAutoDraw)
 
----
+Point JoensAutoDraw at **MS Paint**, a **browser canvas**, **Photoshop**, **Krita**, or any app that draws with the **left mouse button**.  
+You pick a **screen rectangle** — the drawing happens **inside that area, at absolute screen coordinates**. Not tied to one window. Not tied to one app.
 
-## Features
+[Download latest `.exe`](https://github.com/joenb33/JoensAutoDraw/releases/latest) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Safety](#safety)
 
-| Area | What you get |
-|------|----------------|
-| **Inputs** | PNG, JPG, BMP, WebP, SVG, G-code (`.gcode`, `.nc`, `.tap`) |
-| **Raster pipeline** | Grayscale → blur → threshold → segments or OpenCV contours |
-| **Vector pipeline** | SVG path sampling, G-code `G0`/`G1` import with pen-up detection |
-| **Drawing modes** | **Contour** (outline polylines) or **Segments** (horizontal scan lines) |
-| **GUI** | Dark control panel, live previews, drag-to-select draw area, workflow steps |
-| **Safety** | ESC stop, PyAutoGUI corner fail-safe, preflight validation, dry-run, countdown |
-| **Quality** | Aspect-preserving fit, continuous pixel walking (no dot-collapse), travel optimization |
+</div>
 
 ---
 
-## Requirements
-
-- **Windows 10/11**
-- **Python 3.10+**
-- A visible drawing target (e.g. MS Paint, browser canvas)
+> **Use responsibly.** Automate only where it is permitted. You are responsible for app terms and local laws.
 
 ---
 
-## Quick start
+## How it works
 
-### 1. Clone and install
+JoensAutoDraw is a **plan → validate → draw** pipeline that runs entirely on your PC. No cloud. No account. No injection into other processes — it controls the **same mouse cursor you use**, like a very precise robot hand.
+
+```mermaid
+flowchart LR
+    A[Your file<br/>PNG · JPG · SVG · G-code] --> B[Plan strokes<br/>OpenCV + planners]
+    B --> C[Preview<br/>mask + toolpath]
+    C --> D[You select a screen rectangle<br/>anywhere on the monitor]
+    D --> E[Preflight checks<br/>bounds + safety]
+    E --> F[Countdown]
+    F --> G[Win32 / PyAutoGUI<br/>move · click · drag]
+    G --> H[Target app<br/>Paint · canvas · anything]
+```
+
+### In plain language
+
+1. **Import** — load a raster image or vector/CNC file.  
+2. **Plan** — convert it to stroke paths (horizontal scan lines or contour outlines).  
+3. **Select area** — drag a rectangle **anywhere on your screen** (full-screen overlay). This is your canvas — coordinates are mapped from the image into that rectangle.  
+4. **Preflight** — verify the plan fits inside your rectangle before the mouse moves.  
+5. **Draw** — move the cursor, press the left button, drag along the path, lift the pen between strokes.  
+6. **Stop anytime** — `ESC`, or slam the cursor into the screen’s top-left corner.
+
+### Draw anywhere on screen
+
+The draw area is **not** locked to a specific window handle or HWND. You define a **pixel rectangle in screen space** — for example over MS Paint’s canvas, a Google Canvas tab, a second monitor, or a region inside a zoomed UI.
+
+| You control | What AutoPaint does |
+|-------------|---------------------|
+| **Where** on the monitor | Maps image coordinates → screen pixels inside your rectangle |
+| **How big** the drawing is | Aspect ratio preserved; image is fitted inside the selection |
+| **Which app** receives input | Whatever app is under the cursor when drawing runs — **focus that app first** |
+
+> **Tip:** Open your target app, select brush/color there, then select the screen area that covers its drawable surface. JoensAutoDraw does not change pen color yet (see [Roadmap](#roadmap)).
+
+---
+
+## Technology stack
+
+Everything below is used in this repo today:
+
+| Layer | Technology | Role |
+|-------|------------|------|
+| **Language** | Python 3.10+ | Core application |
+| **Desktop GUI** | [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) + Tkinter | Dark control panel, sliders, previews |
+| **Image I/O & CV** | [OpenCV](https://opencv.org/) (`opencv-python`) | Load/decode images, blur, threshold, contours, preview rendering |
+| **Arrays** | [NumPy](https://numpy.org/) | Binary masks, coordinate math |
+| **Pillow** | [PIL](https://python-pillow.org/) | GUI preview thumbnails |
+| **Vector import** | [svgelements](https://github.com/meerk40t/svgelements) | Parse SVG paths |
+| **CNC import** | Custom G-code parser | `G0`/`G1` motion, pen-up heuristics |
+| **Mouse automation** | [PyAutoGUI](https://pyautogui.readthedocs.io/) | Cross-app mouse down/up semantics |
+| **Low-level input** | Win32 `SetCursorPos` + `mouse_event` via `ctypes` | Fast, reliable cursor moves on Windows |
+| **Emergency stop** | Win32 `GetAsyncKeyState` + [`keyboard`](https://github.com/boppreh/keyboard) | Poll `ESC` during draw and countdown |
+| **Packaging** | [PyInstaller](https://pyinstaller.org/) | Single-file `.exe` for releases |
+| **Tests** | [pytest](https://pytest.org/) | Planner, pipeline, drawer, validation |
+| **CI / Release** | GitHub Actions | Test on every push; build `.exe` on version tags |
+
+### Internal modules (Python package `autopaint/`)
+
+| Module | Responsibility |
+|--------|----------------|
+| `image_processing.py` | Grayscale load (Unicode-safe paths), Gaussian blur, threshold |
+| `planner.py` | Horizontal **segments** + OpenCV **contours** + Douglas–Peucker simplification |
+| `vector_import.py` | SVG sampling, G-code polylines |
+| `toolpath.py` | Stroke list → `move / down / draw / up` commands |
+| `pipeline.py` | Shared plan, travel optimization, preflight, execute |
+| `drawer.py` | Aspect-fit mapping, pixel walking, batched drag execution |
+| `validation.py` | Preflight bounds and area checks |
+| `failsafe.py` | ESC + interruptible countdown |
+| `gui.py` | Desktop workflow UI |
+| `main.py` | CLI entry point |
+
+---
+
+## Download (easiest)
+
+1. Go to **[Releases](https://github.com/joenb33/JoensAutoDraw/releases/latest)**.  
+2. Download **`JoensAutoDraw.exe`** (or the `.zip`).  
+3. Double-click — no Python install required.  
+4. Follow the [GUI workflow](#gui-workflow) below.
+
+> Windows SmartScreen may warn on unsigned executables. Choose **More info → Run anyway**, or run from source if you prefer.
+
+---
+
+## Quick start (from source)
 
 ```powershell
 git clone https://github.com/joenb33/JoensAutoDraw.git
@@ -41,171 +118,131 @@ cd JoensAutoDraw
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
 
-### 2. Launch the GUI (recommended)
-
-```powershell
 python -m autopaint.gui
 ```
 
-### 3. Typical workflow
-
-1. **Browse** — pick a source file  
-2. **Build Plan** — inspect mask and planned strokes in the preview panels  
-3. **Select Area** — drag a rectangle over the target canvas (avoid the screen’s top-left corner if possible)  
-4. Leave **Dry run** checked for the first attempt  
-5. **Draw Now** — confirm the safety dialog  
-6. Uncheck **Dry run** and draw for real when satisfied  
-
-**Emergency stop:** press `ESC`, or move the mouse to the **top-left corner** of the screen.
-
----
-
-## CLI usage
+Try the CLI with the bundled sample:
 
 ```powershell
 python -m autopaint.main --image ".\examples\cat.png" --preview --dry-run
 ```
 
-Interactive area selection (terminal prompts for top-left and bottom-right), then countdown and draw.
+---
 
-### Common flags
+## GUI workflow
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--image` | *(required)* | Source file path |
-| `--mode` | `contour` | `contour` or `segments` |
-| `--threshold` | `140` | Binarization threshold (0–255) |
-| `--blur` | `5` | Gaussian blur kernel (odd integer) |
-| `--step` | `2` | Row sampling step (segments mode) |
-| `--contour-epsilon` | `1.2` | Contour simplification (higher = fewer points) |
-| `--speed` | `0.002` | Mouse move duration (seconds) |
-| `--countdown` | `3` | Seconds before drawing starts |
-| `--preview` | off | Show OpenCV preview windows |
-| `--dry-run` | off | Print actions without moving the mouse |
-| `--invert` | off | Invert threshold logic |
+```
+Browse → Build Plan → Select Area → Dry Run → Draw Now
+```
 
-### Vector / CNC flags
+| Step | Action |
+|------|--------|
+| **1. Browse** | Pick PNG, JPG, SVG, G-code, etc. |
+| **2. Build Plan** | Tune threshold / mode; inspect **Planned Preview** |
+| **3. Select Area** | Full-screen overlay — drag a box **anywhere on screen** over your canvas |
+| **4. Dry run** | Leave checked first; confirm log output |
+| **5. Draw Now** | Uncheck dry run when ready; keep **ESC** handy |
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--vector-step` | `1.0` | Sample spacing for SVG/G-code (px) |
-| `--vector-min-points` | `2` | Drop paths shorter than this |
-| `--vector-jump-threshold` | `8.0` | Split SVG paths at large jumps (px) |
-
-### Compatibility / performance
-
-| Flag | Description |
-|------|-------------|
-| `--step-pause-ms` | Pause between drag steps (default `1.2`) |
-| `--stroke-settle-ms` | Pause after mouse-down (default `3.0`) |
-| `--no-optimize-contour-travel` | Disable polyline reordering for shorter pen-up travel |
-| `--fast-input-backend` | Win32-only input (faster, less compatible with some apps) |
-
-Run `python -m autopaint.main --help` for the full list.
+**Emergency stop:** `ESC` · or move mouse to **top-left screen corner**
 
 ---
 
 ## Drawing modes
 
-### Segments (scan lines)
+| Mode | Best for | Output style |
+|------|----------|--------------|
+| **Segments** | Filled logos, photos, bold shapes | Horizontal scan-line fill — very reliable in MS Paint |
+| **Contour** | Line art, SVG, CNC paths | Outline polylines with pen-up travel between paths |
 
-Best for **filled raster art** and bold logos. Converts black pixels into horizontal strokes row by row. Often the most reliable mode in MS Paint.
-
-### Contour (outlines)
-
-Best for **line art, SVG, and CNC paths**. Traces OpenCV contours (raster) or imported polylines (vector). Produces cleaner outlines with less fill overlap.
-
-Vector sources always execute as contours. If you pick **Segments** for a vector file, AutoPaint falls back to contour paths automatically.
+Vector files always run as **contour**. Segment mode on vectors falls back to contour automatically.
 
 ---
 
-## GUI tips
+## CLI reference
 
-- **Compatibility mode** (on by default) uses a hybrid input backend that works well with MS Paint. Turn it off only if you need the fast Win32 backend and have tested your target app.
-- **Speed** — start around 40–70. Very high speeds reduce anchor points; if strokes look sparse, lower the speed.
-- **Toolpath stats** — check `draw_pixels` before drawing. Very low values often mean sparse output; rebuild the plan after tuning speed or contour epsilon.
-- **Travel preview** — grey lines show pen-up moves between contour paths (when travel optimization is enabled).
+```powershell
+python -m autopaint.main --image ".\examples\cat.png" --mode contour --dry-run
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--image` | required | Source path |
+| `--mode` | `contour` | `contour` or `segments` |
+| `--threshold` | `140` | Binarization 0–255 |
+| `--blur` | `5` | Gaussian kernel (odd) |
+| `--step` | `2` | Segment row step |
+| `--contour-epsilon` | `1.2` | Contour simplification |
+| `--speed` | `0.002` | Move duration (seconds) |
+| `--dry-run` | off | No mouse movement |
+| `--preview` | off | OpenCV preview windows |
+
+Full list: `python -m autopaint.main --help`
 
 ---
 
-## Project layout
+## Build your own `.exe`
 
+```powershell
+pip install -r requirements-build.txt
+pyinstaller --noconfirm JoensAutoDraw.spec
+# Output: dist/JoensAutoDraw.exe
 ```
-AutoPaint/
-├── autopaint/
-│   ├── main.py           # CLI entry point
-│   ├── gui.py            # Desktop GUI
-│   ├── pipeline.py       # Plan + execute orchestration
-│   ├── planner.py        # Segments & contour planning
-│   ├── drawer.py         # Coordinate mapping & mouse execution
-│   ├── toolpath.py       # Polyline → tool commands
-│   ├── vector_import.py  # SVG & G-code import
-│   ├── validation.py     # Preflight checks
-│   ├── failsafe.py       # Emergency stop & countdown
-│   ├── image_processing.py
-│   ├── config.py
-│   └── types.py
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── SAFETY.md
-│   └── USAGE.md
-├── tests/
-├── examples/
-│   └── cat.png           # Sample image for trying the CLI
-├── requirements.txt
-├── requirements-dev.txt
-└── LICENSE
-```
+
+Releases are built automatically when a `v*` tag is pushed (see `.github/workflows/release.yml`).
+
+---
+
+## Safety
+
+| Layer | Mechanism |
+|-------|-----------|
+| Dry run | Default in GUI — plan without moving the mouse |
+| Preflight | Validates area size, paths, and screen bounds before draw |
+| Countdown | Configurable delay; ESC works during countdown |
+| ESC stop | Win32 + keyboard polling |
+| Corner fail-safe | PyAutoGUI abort at screen `(0,0)` |
+| Bounds guard | Stops if any pixel would leave your selected rectangle |
+| Mouse cleanup | Releases left button on error/interrupt |
+
+Details: [docs/SAFETY.md](docs/SAFETY.md)
+
+---
+
+## Troubleshooting
+
+| Problem | Try |
+|---------|-----|
+| Dots instead of lines | Lower **Speed** (~40–70); keep **Compatibility mode** on |
+| Nothing appears | Focus the target app; area must cover the canvas; dry-run first |
+| Wrong position | Reselect area after moving/scrolling the target window |
+| Tool menus pop up | Avoid selecting an area at the screen’s top-left corner |
+| Web canvas blocked | Many sites block synthetic input — use only where allowed |
 
 ---
 
 ## Development
-
-Install dev dependencies and run tests:
 
 ```powershell
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module design and [docs/SAFETY.md](docs/SAFETY.md) for the safety model.
-
----
-
-## Troubleshooting
-
-| Symptom | Things to try |
-|---------|----------------|
-| **Only dots, no lines** | Lower **Speed**; keep **Compatibility mode** on; prefer **Segments** for filled raster art |
-| **Missing detail** | Lower `--step`, reduce `--contour-epsilon`, adjust `--threshold` |
-| **Too dense / slow** | Raise `--step` or `--contour-epsilon`, increase speed slightly |
-| **Nothing in Paint** | Confirm draw area covers the canvas; run dry-run first; check preflight errors in the log |
-| **Tool menus pop up** | Draw area may be too close to the screen top-left fail-safe zone; avoid clicking without dragging |
-| **OpenCV preview missing** | Ensure a desktop session is active (not headless) |
-| **ESC stop unreliable** | Run as administrator if the `keyboard` package cannot hook ESC; Win32 fallback still works on Windows |
-| **Web canvas blocked** | Many sites block synthetic input — use only where permitted |
+- [Usage guide](docs/USAGE.md)  
+- [Architecture](docs/ARCHITECTURE.md)  
+- [Safety model](docs/SAFETY.md)
 
 ---
 
 ## Roadmap
 
 - [ ] Multi-color / pen palette switching  
-- [ ] Per-app presets (MS Paint, browser canvas, etc.)  
-- [ ] Pause when the active window changes  
-- [ ] Optional path simplification profiles (quality vs speed)  
+- [ ] Per-app presets (MS Paint, browser canvas, …)  
+- [ ] Pause when active window changes  
+- [ ] Quality vs speed profiles  
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
----
-
-## Documentation
-
-- [Usage guide (GUI & CLI)](docs/USAGE.md)  
-- [Architecture](docs/ARCHITECTURE.md)  
-- [Safety model](docs/SAFETY.md)
+MIT © [Joen Berg](https://github.com/joenb33) — see [LICENSE](LICENSE).
