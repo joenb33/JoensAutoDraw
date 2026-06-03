@@ -1,0 +1,7 @@
+numpy
+opencv-python
+pyautogui
+keyboard
+customtkinter
+pillow
+svgelements
