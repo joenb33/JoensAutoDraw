@@ -331,14 +331,20 @@ def _decimate_points_for_compatibility(
     return _prepare_drag_points(points, draw_config)
 
 
+def _compat_step_pause(draw_config: DrawConfig) -> float:
+    if not draw_config.compatibility_mode:
+        return draw_config.step_pause_seconds
+    return max(draw_config.step_pause_seconds, 0.004)
+
+
 def _drag_cursor(x: int, y: int, draw_config: DrawConfig) -> None:
+    pause = _compat_step_pause(draw_config)
     if draw_config.compatibility_mode:
-        _move_cursor_fast(x, y)
-        if draw_config.step_pause_seconds > 0:
-            _sleep_if_needed(min(draw_config.step_pause_seconds, 0.001))
+        duration = max(pause, 0.001)
+        pyautogui.moveTo(x, y, duration=duration, _pause=False)
         return
     _move_cursor_fast(x, y)
-    _sleep_if_needed(draw_config.step_pause_seconds)
+    _sleep_if_needed(pause)
 
 
 def draw_segments(
@@ -796,6 +802,12 @@ def _simulate_tool_command_paths(
                     estimated_seconds += draw_config.stroke_settle_seconds
                     pen_is_down = True
                     stroke_pixels = []
+                if not stroke_pixels and last_float_pos is not None:
+                    anchor = (
+                        int(round(last_float_pos[0])),
+                        int(round(last_float_pos[1])),
+                    )
+                    _append_unique_points(stroke_pixels, [anchor])
                 if last_float_pos is not None:
                     path = _expand_float_segment(last_float_pos[0], last_float_pos[1], fx, fy)
                     _append_unique_points(stroke_pixels, path[1:] if len(path) > 1 else path)
@@ -884,7 +896,12 @@ def draw_tool_commands(
                     elif cmd.kind == "draw":
                         if not pen_is_down:
                             pen_is_down = True
-                            stroke_pixels = []
+                        if not stroke_pixels and last_float_pos is not None:
+                            anchor = (
+                                int(round(last_float_pos[0])),
+                                int(round(last_float_pos[1])),
+                            )
+                            _append_unique_points(stroke_pixels, [anchor])
                         if last_float_pos is not None:
                             path = _expand_float_segment(
                                 last_float_pos[0], last_float_pos[1], fx, fy
@@ -902,7 +919,12 @@ def draw_tool_commands(
                 elif cmd.kind == "draw":
                     if not pen_is_down:
                         pen_is_down = True
-                        stroke_pixels = []
+                    if not stroke_pixels and last_float_pos is not None:
+                        anchor = (
+                            int(round(last_float_pos[0])),
+                            int(round(last_float_pos[1])),
+                        )
+                        _append_unique_points(stroke_pixels, [anchor])
                     if last_float_pos is not None:
                         path = _expand_float_segment(
                             last_float_pos[0], last_float_pos[1], fx, fy

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Iterable, Literal
 
 import cv2
@@ -110,6 +111,57 @@ def simplify_polylines(polylines: list[Polyline], epsilon: float) -> list[Polyli
         if len(points) >= 2:
             simplified.append(Polyline(points=points))
     return simplified
+
+
+def filter_polylines_by_min_points(
+    polylines: list[Polyline], min_points: int
+) -> list[Polyline]:
+    minimum = max(2, int(min_points))
+    return [polyline for polyline in polylines if len(polyline.points) >= minimum]
+
+
+def resample_polyline(polyline: Polyline, step_px: float) -> Polyline:
+    if len(polyline.points) < 2:
+        return polyline
+    step = max(0.5, float(step_px))
+    out: list[Point] = [polyline.points[0]]
+    for idx in range(1, len(polyline.points)):
+        start = polyline.points[idx - 1]
+        end = polyline.points[idx]
+        dx = end.x - start.x
+        dy = end.y - start.y
+        dist = math.hypot(dx, dy)
+        if dist < 1e-9:
+            if out[-1] != end:
+                out.append(end)
+            continue
+        travelled = step
+        while travelled < dist:
+            ratio = travelled / dist
+            out.append(
+                Point(
+                    x=int(round(start.x + dx * ratio)),
+                    y=int(round(start.y + dy * ratio)),
+                )
+            )
+            travelled += step
+        if out[-1] != end:
+            out.append(end)
+    return Polyline(points=tuple(out))
+
+
+def resample_polylines(polylines: list[Polyline], step_px: float) -> list[Polyline]:
+    return [resample_polyline(polyline, step_px=step_px) for polyline in polylines]
+
+
+def tune_polylines_for_draw(
+    polylines: list[Polyline],
+    *,
+    min_points: int,
+    sample_step_px: float,
+) -> list[Polyline]:
+    filtered = filter_polylines_by_min_points(polylines, min_points=min_points)
+    return resample_polylines(filtered, step_px=sample_step_px)
 
 
 def render_polyline_preview(

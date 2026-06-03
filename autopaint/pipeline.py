@@ -31,6 +31,7 @@ from autopaint.planner import (
     render_polyline_preview,
     render_segment_preview,
     simplify_polylines,
+    tune_polylines_for_draw,
 )
 from autopaint.vector_import import load_gcode_polylines, load_svg_polylines
 from autopaint.toolpath import polylines_to_commands, segments_to_commands
@@ -72,6 +73,11 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         min_contour_area=processing.min_contour_area,
     )
     polylines = simplify_polylines(raw_polylines, epsilon=contour_epsilon)
+    polylines = tune_polylines_for_draw(
+        polylines,
+        min_points=processing.vector_min_polyline_points,
+        sample_step_px=processing.vector_sample_step,
+    )
 
     preview_segments = render_segment_preview(mask=mask, segments=segments)
     preview_polylines = render_polyline_preview(mask=mask, polylines=polylines)

@@ -6,7 +6,9 @@ import numpy as np
 from autopaint.planner import (
     mask_to_contour_polylines,
     mask_to_segments,
+    resample_polylines,
     simplify_polylines,
+    tune_polylines_for_draw,
 )
 from autopaint.types import Point, Polyline
 
@@ -88,3 +90,22 @@ def test_mask_to_contour_polylines_largest_keeps_one(square_mask: np.ndarray) ->
     largest = mask_to_contour_polylines(mask, contour_mode="largest", min_contour_area=0)
 
     assert len(largest) == 1
+
+
+def test_resample_polylines_changes_density() -> None:
+    polyline = Polyline(points=(Point(x=0, y=0), Point(x=100, y=0)))
+    dense = resample_polylines([polyline], step_px=1.0)[0]
+    sparse = resample_polylines([polyline], step_px=10.0)[0]
+
+    assert len(dense.points) > len(sparse.points)
+
+
+def test_tune_polylines_for_draw_filters_and_resamples() -> None:
+    polylines = [
+        Polyline(points=(Point(x=0, y=0), Point(x=40, y=0))),
+        Polyline(points=(Point(x=0, y=0),)),
+    ]
+    tuned = tune_polylines_for_draw(polylines, min_points=2, sample_step_px=2.0)
+
+    assert len(tuned) == 1
+    assert len(tuned[0].points) > 2

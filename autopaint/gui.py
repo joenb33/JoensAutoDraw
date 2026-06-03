@@ -74,6 +74,7 @@ class AutoPaintGui(ctk.CTk):
         self._live_plan_generation = 0
         self._build_layout()
         self._bind_live_preview_traces()
+        self._update_source_hint()
         self.after(UPDATE_CHECK_DELAY_MS, self._check_for_updates_on_startup)
 
     def _check_for_updates_on_startup(self) -> None:
@@ -168,11 +169,19 @@ class AutoPaintGui(ctk.CTk):
         tabs = ctk.CTkTabview(left, corner_radius=10)
         tabs.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 6))
         raster_tab = tabs.add("Raster")
-        vector_tab = tabs.add("Vector/CNC")
+        vector_tab = tabs.add("Path tuning")
         raster_tab.grid_columnconfigure(1, weight=1)
         vector_tab.grid_columnconfigure(1, weight=1)
         self._add_processing_controls(raster_tab)
         self._add_vector_controls(vector_tab)
+        self._vector_tab_hint = ctk.CTkLabel(
+            left,
+            text="",
+            justify="left",
+            anchor="w",
+            wraplength=420,
+        )
+        self._vector_tab_hint.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         self._add_draw_controls(left)
 
         right = ctk.CTkFrame(body, corner_radius=12)
@@ -394,7 +403,13 @@ class AutoPaintGui(ctk.CTk):
 
     def _add_vector_controls(self, parent) -> None:
         row = 0
-        self._add_slider(parent, row, "Vector step (px)", self.vector_step, 0.5, 6.0)
+        ctk.CTkLabel(
+            parent,
+            text="Contour path tuning",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 8))
+        row += 1
+        self._add_slider(parent, row, "Path sample (px)", self.vector_step, 0.5, 6.0)
         row += 1
         self._add_slider(parent, row, "Min path points", self.vector_min_points, 2, 20)
         row += 1
@@ -402,7 +417,10 @@ class AutoPaintGui(ctk.CTk):
         row += 1
         ctk.CTkLabel(
             parent,
-            text="Tip: Increase Jump split if paths break too much.\nLower it if pen-down crosses gaps.",
+            text=(
+                "Lower Path sample = denser drawn lines (better for Paint).\n"
+                "Jump split mainly affects imported SVG/G-code paths."
+            ),
             justify="left",
             anchor="w",
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
@@ -513,6 +531,22 @@ class AutoPaintGui(ctk.CTk):
             self._set_pipeline_step("plan", "ready")
             self._set_pipeline_step("draw", "waiting")
             self._schedule_live_preview(replan=True)
+            self._update_source_hint()
+
+    def _source_kind_label(self) -> str:
+        path = self.image_path.get().strip()
+        if not path:
+            return "No source loaded."
+        suffix = Path(path).suffix.lower()
+        if suffix in RASTER_SUFFIXES:
+            return "Raster image: Path tuning + Raster tab both affect contour preview and drawing."
+        if suffix in {".svg", ".gcode", ".nc", ".tap"}:
+            return f"Vector file ({suffix}): Path tuning controls import sampling and path splits."
+        return "Unknown source type."
+
+    def _update_source_hint(self) -> None:
+        if hasattr(self, "_vector_tab_hint"):
+            self._vector_tab_hint.configure(text=self._source_kind_label())
 
     def _is_raster_source(self) -> bool:
         path = self.image_path.get().strip()
