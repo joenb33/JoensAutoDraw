@@ -83,8 +83,16 @@ def fetch_latest_update(timeout: float = 8.0) -> UpdateInfo | None:
     )
 
 
+def _update_staging_path(version: str) -> Path:
+    current = current_exe_path()
+    filename = f"{EXE_NAME}.{version}.new"
+    if current is not None:
+        return current.parent / filename
+    return Path(tempfile.gettempdir()) / filename
+
+
 def download_update(info: UpdateInfo, timeout: float = 180.0) -> Path:
-    destination = Path(tempfile.gettempdir()) / f"{EXE_NAME}.{info.version}.new"
+    destination = _update_staging_path(info.version)
     request = urllib.request.Request(info.download_url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as handle:
         handle.write(response.read())
@@ -92,38 +100,49 @@ def download_update(info: UpdateInfo, timeout: float = 180.0) -> Path:
 
 
 def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
-    """Batch script that waits for the running app to exit before swapping the exe."""
+    """PowerShell script: wait for exit, copy replace, brief pause, relaunch."""
+    new_path = str(new_exe.resolve()).replace("'", "''")
+    target_path = str(target.resolve()).replace("'", "''")
+    target_dir = str(target.parent.resolve()).replace("'", "''")
     return "\n".join(
         [
-            "@echo off",
-            "setlocal EnableExtensions",
-            "set /a WAIT=0",
-            ":waitpid",
-            f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-            "if %ERRORLEVEL%==0 (",
-            "  timeout /t 1 /nobreak >nul",
-            "  set /a WAIT+=1",
-            "  if %WAIT% lss 45 goto waitpid",
-            ")",
-            "rem Allow PyInstaller one-file temp extraction to finish cleanup",
-            "timeout /t 2 /nobreak >nul",
-            f'set "NEW={new_exe}"',
-            f'set "TARGET={target}"',
-            "set /a RETRY=0",
-            ":replacetry",
-            'move /Y "%NEW%" "%TARGET%" >nul',
-            "if %ERRORLEVEL% neq 0 (",
-            "  set /a RETRY+=1",
-            "  if %RETRY% lss 20 (",
-            "    timeout /t 1 /nobreak >nul",
-            "    goto replacetry",
-            "  )",
-            "  exit /b 1",
-            ")",
-            "rem Brief pause so Windows finishes flushing the replaced executable",
-            "timeout /t 1 /nobreak >nul",
-            'start "" "%TARGET%"',
-            "del \"%~f0\"",
+            "$ErrorActionPreference = 'SilentlyContinue'",
+            f"$PidToWait = {int(pid)}",
+            f"$NewExe = '{new_path}'",
+            f"$TargetExe = '{target_path}'",
+            f"$TargetDir = '{target_dir}'",
+            "$Deadline = (Get-Date).AddSeconds(120)",
+            "while ((Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $Deadline)) {",
+            "  Start-Sleep -Milliseconds 500",
+            "}",
+            "Start-Sleep -Seconds 5",
+            "$ProcDeadline = (Get-Date).AddSeconds(60)",
+            "while ((Get-Process -Name 'JoensAutoDraw' -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $ProcDeadline)) {",
+            "  Start-Sleep -Milliseconds 500",
+            "}",
+            "Start-Sleep -Seconds 4",
+            "$Copied = $false",
+            "for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {",
+            "  try {",
+            "    Copy-Item -LiteralPath $NewExe -Destination $TargetExe -Force",
+            "    if (Test-Path -LiteralPath $TargetExe) { $Copied = $true; break }",
+            "  } catch { }",
+            "  Start-Sleep -Seconds 1",
+            "}",
+            "Remove-Item -LiteralPath $NewExe -Force -ErrorAction SilentlyContinue",
+            "if (-not $Copied) { exit 1 }",
+            "Start-Sleep -Seconds 5",
+            "try {",
+            "  Add-Type -AssemblyName PresentationFramework",
+            "  [System.Windows.MessageBox]::Show(",
+            "    'Update installed successfully. JoensAutoDraw will start now.',",
+            "    'JoensAutoDraw Update',",
+            "    'OK',",
+            "    'Information'",
+            "  ) | Out-Null",
+            "} catch { Start-Sleep -Seconds 2 }",
+            "Start-Process -LiteralPath $TargetExe -WorkingDirectory $TargetDir",
+            "Remove-Item -LiteralPath $PSCommandPath -Force",
         ]
     )
 
@@ -133,7 +152,7 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
     if current is None:
         raise RuntimeError("Updates can only be applied to the packaged executable.")
 
-    helper = Path(tempfile.gettempdir()) / "JoensAutoDraw-update.bat"
+    helper = Path(tempfile.gettempdir()) / "JoensAutoDraw-update.ps1"
     helper.write_text(
         build_update_helper_script(
             pid=pid if pid is not None else os.getpid(),
@@ -143,8 +162,17 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
         encoding="utf-8",
     )
     subprocess.Popen(
-        ["cmd", "/c", str(helper)],
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(helper),
+        ],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         close_fds=True,
     )
-    sys.exit(0)
+    os._exit(0)

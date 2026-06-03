@@ -63,15 +63,15 @@ def test_fetch_latest_update_skips_when_not_frozen(_frozen) -> None:
     assert fetch_latest_update() is None
 
 
-def test_build_update_helper_script_waits_for_pid_and_retries_replace() -> None:
+def test_build_update_helper_script_waits_for_process_and_copies() -> None:
     script = build_update_helper_script(
         pid=12345,
-        new_exe=Path(r"C:\Temp\JoensAutoDraw.exe.0.2.0.new"),
+        new_exe=Path(r"C:\Apps\JoensAutoDraw.exe.0.2.0.new"),
         target=Path(r"C:\Apps\JoensAutoDraw.exe"),
     )
 
-    assert 'PID eq 12345' in script
-    assert "goto waitpid" in script
-    assert "goto replacetry" in script
-    assert r'set "NEW=C:\Temp\JoensAutoDraw.exe.0.2.0.new"' in script
-    assert r'set "TARGET=C:\Apps\JoensAutoDraw.exe"' in script
+    assert "$PidToWait = 12345" in script
+    assert "Get-Process -Id $PidToWait" in script
+    assert "Get-Process -Name 'JoensAutoDraw'" in script
+    assert "Copy-Item -LiteralPath $NewExe -Destination $TargetExe -Force" in script
+    assert "Start-Process -LiteralPath $TargetExe" in script
