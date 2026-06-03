@@ -20,6 +20,8 @@ from autopaint.planner import render_polyline_preview, render_segment_preview
 from autopaint.updater import download_update, fetch_latest_update, schedule_apply_update
 from autopaint.types import Rect
 
+UPDATE_CHECK_DELAY_MS = 1500
+
 
 class AutoPaintGui(ctk.CTk):
     def __init__(self) -> None:
