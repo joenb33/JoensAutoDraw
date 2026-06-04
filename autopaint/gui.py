@@ -13,7 +13,12 @@ from PIL import Image
 
 from autopaint import __version__
 from autopaint.config import DrawConfig, ProcessingConfig
-from autopaint.drawer import BoundsViolation, RasterSize, simulate_tool_commands
+from autopaint.drawer import (
+    BoundsViolation,
+    RasterSize,
+    render_execution_preview_on_mask,
+    simulate_tool_commands,
+)
 from autopaint.failsafe import EmergencyStop, esc_backend_description
 from autopaint.pipeline import build_execution_commands, create_plan, execute_draw, resolve_draw_polylines
 from autopaint.validation import DrawValidationError
@@ -418,12 +423,18 @@ class AutoPaintGui(ctk.CTk):
             target_rect=target_rect,
             draw_config=draw_conf,
         )
+        scale_note = ""
+        if self._selected_rect is not None and plan.source_width > 0:
+            from autopaint.drawer import _build_fit_transform
+
+            fit = _build_fit_transform(source_size, target_rect)
+            scale_note = f", screen={fit.scale:.2f}px/src"
         self._toolpath_stats_label.configure(
             text=(
                 "Toolpath stats: "
                 f"commands={len(commands)}, strokes={stats.stroke_count}, "
                 f"draw_pixels={stats.draw_pixel_events}, moves={stats.move_events}, "
-                f"est. time={stats.estimated_seconds:.1f}s"
+                f"est. time={stats.estimated_seconds:.1f}s{scale_note}"
             )
         )
 
@@ -984,7 +995,18 @@ class AutoPaintGui(ctk.CTk):
         def update_ui() -> None:
             preview_thickness = max(1, int(round(self.preview_stroke_px.get())))
             use_contour = mode == "contour" or not plan.segments
-            if use_contour:
+            draw_conf = self._build_draw()
+            source_size = RasterSize(width=plan.source_width, height=plan.source_height)
+            if self._selected_rect is not None and use_contour:
+                planned = render_execution_preview_on_mask(
+                    plan.mask,
+                    plan.polylines,
+                    source_size=source_size,
+                    target_rect=self._selected_rect,
+                    draw_config=draw_conf,
+                    thickness=preview_thickness,
+                )
+            elif use_contour:
                 planned = render_polyline_preview(
                     mask=plan.mask, polylines=plan.polylines, thickness=preview_thickness
                 )

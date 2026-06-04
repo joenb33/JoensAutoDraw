@@ -7,6 +7,8 @@ from typing import Iterable
 import time
 import ctypes
 
+import cv2
+import numpy as np
 import pyautogui
 
 from autopaint.config import DrawConfig
@@ -139,6 +141,53 @@ def _expand_float_segment(
     if not out or (ex, ey) != out[-1]:
         out.append((ex, ey))
     return out
+
+
+def render_execution_preview_on_mask(
+    mask: np.ndarray,
+    polylines: Iterable[Polyline],
+    *,
+    source_size: RasterSize,
+    target_rect: Rect,
+    draw_config: DrawConfig,
+    thickness: int = 1,
+) -> np.ndarray:
+    """Preview the actual screen drag path mapped back onto the source mask."""
+    preview = np.zeros_like(mask)
+    height, width = preview.shape[:2]
+    fit = _build_fit_transform(src=source_size, target=target_rect)
+    line_thickness = max(1, int(thickness))
+
+    for polyline in polylines:
+        if len(polyline.points) < 2:
+            continue
+        path = _polyline_to_screen_pixel_path(polyline.points, fit)
+        drag_points = _prepare_drag_points(path, draw_config)
+        if len(drag_points) < 2:
+            continue
+        for idx in range(1, len(drag_points)):
+            sx0, sy0 = drag_points[idx - 1]
+            sx1, sy1 = drag_points[idx]
+            x0 = int(round((sx0 - fit.offset_x) / fit.scale))
+            y0 = int(round((sy0 - fit.offset_y) / fit.scale))
+            x1 = int(round((sx1 - fit.offset_x) / fit.scale))
+            y1 = int(round((sy1 - fit.offset_y) / fit.scale))
+            if not (
+                0 <= x0 < width
+                and 0 <= y0 < height
+                and 0 <= x1 < width
+                and 0 <= y1 < height
+            ):
+                continue
+            cv2.line(
+                preview,
+                (x0, y0),
+                (x1, y1),
+                color=255,
+                thickness=line_thickness,
+                lineType=cv2.LINE_8,
+            )
+    return preview
 
 
 def _polyline_to_screen_pixel_path(
@@ -276,19 +325,15 @@ def _mouse_left_up(draw_config: DrawConfig) -> None:
 
 
 def _compatibility_stride(draw_config: DrawConfig) -> int:
-    # In compatibility mode (pyautogui drag backend), per-point calls are expensive.
-    # Use an adaptive stride so the speed slider has strong visible effect.
-    if draw_config.move_duration <= 0.003:
-        return 32
-    if draw_config.move_duration <= 0.006:
-        return 24
-    if draw_config.move_duration <= 0.01:
-        return 16
+    # Fast SetCursorPos drags need a dense path so MS Paint and similar apps see ink.
+    # Only decimate when the user deliberately slows travel (high move_duration).
+    if draw_config.move_duration <= 0.008:
+        return 1
     if draw_config.move_duration <= 0.02:
-        return 10
+        return 4
     if draw_config.move_duration <= 0.03:
         return 6
-    return 1
+    return 8
 
 
 def _densify_point_path(

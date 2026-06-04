@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from autopaint.config import DrawConfig
@@ -7,11 +8,14 @@ from autopaint.drawer import (
     BoundsViolation,
     RasterSize,
     _build_fit_transform,
+    _compatibility_stride,
     _drag_cursor,
     _expand_float_segment,
     _polyline_to_screen_pixel_path,
+    _prepare_drag_points,
     map_to_screen,
     normalize_rect,
+    render_execution_preview_on_mask,
     simulate_tool_commands,
 )
 from autopaint.toolpath import polylines_to_commands
@@ -150,6 +154,34 @@ def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.M
 
     assert calls["fast"] == 1
     assert calls["moveTo"] == 0
+
+
+def test_compatibility_stride_keeps_dense_path_at_high_speed() -> None:
+    draw_config = DrawConfig(compatibility_mode=True, move_duration=0.0)
+    assert _compatibility_stride(draw_config) == 1
+
+    path = [(x, 0) for x in range(200)]
+    prepared = _prepare_drag_points(path, draw_config)
+    assert len(prepared) >= 150
+
+
+def test_render_execution_preview_reflects_screen_mapping() -> None:
+    mask = np.zeros((40, 40), dtype=np.uint8)
+    polyline = Polyline(
+        points=(
+            Point(x=5, y=20),
+            Point(x=35, y=20),
+        )
+    )
+    preview = render_execution_preview_on_mask(
+        mask,
+        [polyline],
+        source_size=RasterSize(width=40, height=40),
+        target_rect=Rect(left=0, top=0, right=400, bottom=400),
+        draw_config=DrawConfig(compatibility_mode=True, move_duration=0.0),
+        thickness=1,
+    )
+    assert int(np.count_nonzero(preview)) > 20
 
 
 def test_contour_stroke_survives_batch_decimation() -> None:
