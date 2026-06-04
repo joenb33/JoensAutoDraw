@@ -14,6 +14,8 @@ from autopaint import __version__
 
 GITHUB_REPO = "joenb33/JoensAutoDraw"
 EXE_NAME = "JoensAutoDraw.exe"
+BACKUP_EXE_NAME = "JoensAutoDraw.exe.bak"
+UPDATE_LOG_NAME = "JoensAutoDraw-update.log"
 USER_AGENT = f"JoensAutoDraw/{__version__}"
 
 
@@ -32,6 +34,10 @@ def current_exe_path() -> Path | None:
     if not is_frozen_app():
         return None
     return Path(sys.executable).resolve()
+
+
+def update_log_path(target_exe: Path) -> Path:
+    return target_exe.parent / UPDATE_LOG_NAME
 
 
 def parse_version(value: str) -> tuple[int, ...]:
@@ -99,52 +105,107 @@ def download_update(info: UpdateInfo, timeout: float = 180.0) -> Path:
     return destination
 
 
+def _batch_quote(value: str) -> str:
+    return value.replace("%", "%%").replace('"', '""')
+
+
 def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
-    """PowerShell script: wait for exit, copy replace, brief pause, relaunch."""
-    new_path = str(new_exe.resolve()).replace("'", "''")
-    target_path = str(target.resolve()).replace("'", "''")
-    target_dir = str(target.parent.resolve()).replace("'", "''")
-    return "\n".join(
+    """Hidden CMD helper: wait for exit, rename-replace exe, relaunch, log to app folder."""
+    new_path = _batch_quote(str(new_exe.resolve()))
+    target_path = _batch_quote(str(target.resolve()))
+    target_dir = _batch_quote(str(target.parent.resolve()))
+    backup_path = _batch_quote(str(target.parent / BACKUP_EXE_NAME))
+    log_path = _batch_quote(str(update_log_path(target)))
+    return "\r\n".join(
         [
-            "$ErrorActionPreference = 'SilentlyContinue'",
-            f"$PidToWait = {int(pid)}",
-            f"$NewExe = '{new_path}'",
-            f"$TargetExe = '{target_path}'",
-            f"$TargetDir = '{target_dir}'",
-            "$Deadline = (Get-Date).AddSeconds(120)",
-            "while ((Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $Deadline)) {",
-            "  Start-Sleep -Milliseconds 500",
-            "}",
-            "Start-Sleep -Seconds 5",
-            "$ProcDeadline = (Get-Date).AddSeconds(60)",
-            "while ((Get-Process -Name 'JoensAutoDraw' -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $ProcDeadline)) {",
-            "  Start-Sleep -Milliseconds 500",
-            "}",
-            "Start-Sleep -Seconds 4",
-            "$Copied = $false",
-            "for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {",
-            "  try {",
-            "    Copy-Item -LiteralPath $NewExe -Destination $TargetExe -Force",
-            "    if (Test-Path -LiteralPath $TargetExe) { $Copied = $true; break }",
-            "  } catch { }",
-            "  Start-Sleep -Seconds 1",
-            "}",
-            "Remove-Item -LiteralPath $NewExe -Force -ErrorAction SilentlyContinue",
-            "if (-not $Copied) { exit 1 }",
-            "Start-Sleep -Seconds 5",
-            "try {",
-            "  Add-Type -AssemblyName PresentationFramework",
-            "  [System.Windows.MessageBox]::Show(",
-            "    'Update installed successfully. JoensAutoDraw will start now.',",
-            "    'JoensAutoDraw Update',",
-            "    'OK',",
-            "    'Information'",
-            "  ) | Out-Null",
-            "} catch { Start-Sleep -Seconds 2 }",
-            "Start-Process -LiteralPath $TargetExe -WorkingDirectory $TargetDir",
-            "Remove-Item -LiteralPath $PSCommandPath -Force",
+            "@echo off",
+            "setlocal EnableExtensions EnableDelayedExpansion",
+            f'set "NEW={new_path}"',
+            f'set "TARGET={target_path}"',
+            f'set "TARGET_DIR={target_dir}"',
+            f'set "BACKUP={backup_path}"',
+            f'set "LOG={log_path}"',
+            f"set /a PID={int(pid)}",
+            ">>\"%LOG%\" echo.",
+            ">>\"%LOG%\" echo [%date% %time%] JoensAutoDraw updater started (pid=%PID%).",
+            ">>\"%LOG%\" echo NEW=\"%NEW%\"",
+            ">>\"%LOG%\" echo TARGET=\"%TARGET%\"",
+            "set /a WAIT=0",
+            ":waitpid",
+            'tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul',
+            "if %ERRORLEVEL%==0 (",
+            "  timeout /t 1 /nobreak >nul",
+            "  set /a WAIT+=1",
+            "  if !WAIT! lss 120 goto waitpid",
+            ")",
+            ">>\"%LOG%\" echo [%date% %time%] Process wait finished.",
+            "rem Allow PyInstaller one-file temp extraction to finish cleanup",
+            "timeout /t 4 /nobreak >nul",
+            "set /a IMAGEWAIT=0",
+            ":waitimage",
+            'tasklist /FI "IMAGENAME eq JoensAutoDraw.exe" 2>nul | find /I "JoensAutoDraw.exe" >nul',
+            "if %ERRORLEVEL%==0 (",
+            "  timeout /t 1 /nobreak >nul",
+            "  set /a IMAGEWAIT+=1",
+            "  if !IMAGEWAIT! lss 90 goto waitimage",
+            ")",
+            ">>\"%LOG%\" echo [%date% %time%] No running JoensAutoDraw.exe processes.",
+            "timeout /t 2 /nobreak >nul",
+            'if not exist "%NEW%" (',
+            '  >>"%LOG%" echo ERROR: Staging file missing: "%NEW%"',
+            "  goto :fail",
+            ")",
+            'for %%A in ("%NEW%") do set NEW_SIZE=%%~zA',
+            "if !NEW_SIZE! lss 500000 (",
+            '  >>"%LOG%" echo ERROR: Staging file too small: !NEW_SIZE! bytes',
+            "  goto :fail",
+            ")",
+            "set /a RETRY=0",
+            ":replacetry",
+            'if exist "%BACKUP%" del /F /Q "%BACKUP%" >>"%LOG%" 2>&1',
+            'if exist "%TARGET%" (',
+            f'  ren "%TARGET%" "{BACKUP_EXE_NAME}" >>"%LOG%" 2>&1',
+            ")",
+            'move /Y "%NEW%" "%TARGET%" >>"%LOG%" 2>&1',
+            "if %ERRORLEVEL% neq 0 (",
+            "  set /a RETRY+=1",
+            "  if !RETRY! lss 40 (",
+            "    timeout /t 1 /nobreak >nul",
+            "    goto :replacetry",
+            "  )",
+            '  >>"%LOG%" echo ERROR: Could not replace executable after !RETRY! attempts.',
+            '  if exist "%TARGET%" del /F /Q "%TARGET%" >>"%LOG%" 2>&1',
+            '  if exist "%BACKUP%" move /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1',
+            "  goto :fail",
+            ")",
+            'if exist "%BACKUP%" del /F /Q "%BACKUP%" >>"%LOG%" 2>&1',
+            ">>\"%LOG%\" echo [%date% %time%] Replace succeeded.",
+            "timeout /t 2 /nobreak >nul",
+            'start "" /D "%TARGET_DIR%" "%TARGET%"',
+            ">>\"%LOG%\" echo [%date% %time%] Launched updated app.",
+            "del \"%~f0\"",
+            "exit /b 0",
+            ":fail",
+            ">>\"%LOG%\" echo [%date% %time%] Update failed. See log above.",
+            'mshta "javascript:var s=new ActiveXObject(''WScript.Shell'');s.Popup(''JoensAutoDraw could not apply the update automatically.\\n\\nOpen JoensAutoDraw-update.log in the app folder for details.'',0,''JoensAutoDraw Update'',48);close()"',
+            "exit /b 1",
         ]
     )
+
+
+def _windows_subprocess_kwargs() -> dict[str, object]:
+    if sys.platform != "win32":
+        return {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    creationflags = (
+        create_no_window
+        | subprocess.DETACHED_PROCESS
+        | subprocess.CREATE_NEW_PROCESS_GROUP
+    )
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {"creationflags": creationflags, "startupinfo": startupinfo}
 
 
 def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
@@ -152,7 +213,7 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
     if current is None:
         raise RuntimeError("Updates can only be applied to the packaged executable.")
 
-    helper = Path(tempfile.gettempdir()) / "JoensAutoDraw-update.ps1"
+    helper = Path(tempfile.gettempdir()) / "JoensAutoDraw-update.bat"
     helper.write_text(
         build_update_helper_script(
             pid=pid if pid is not None else os.getpid(),
@@ -160,19 +221,11 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
             target=current,
         ),
         encoding="utf-8",
+        newline="\r\n",
     )
     subprocess.Popen(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-File",
-            str(helper),
-        ],
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        ["cmd.exe", "/c", str(helper)],
         close_fds=True,
+        **_windows_subprocess_kwargs(),
     )
     os._exit(0)
