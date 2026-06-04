@@ -7,6 +7,7 @@ import pytest
 
 from autopaint import versioning
 from autopaint.updater import (
+    build_hidden_launcher_vbs,
     build_update_helper_script,
     fetch_latest_update,
     is_newer_version,
@@ -63,7 +64,7 @@ def test_fetch_latest_update_skips_when_not_frozen(_frozen) -> None:
     assert fetch_latest_update() is None
 
 
-def test_build_update_helper_script_waits_for_process_and_replaces() -> None:
+def test_build_update_helper_script_uses_powershell_without_find() -> None:
     target = Path(r"C:\Apps\JoensAutoDraw.exe")
     script = build_update_helper_script(
         pid=12345,
@@ -71,24 +72,22 @@ def test_build_update_helper_script_waits_for_process_and_replaces() -> None:
         target=target,
     )
 
-    assert "set /a PID=12345" in script
-    assert 'tasklist /FI "PID eq %PID%"' in script
-    assert "TLINE:~0,4" in script
-    assert "findstr" not in script.lower()
-    assert 'find "%PID%"' not in script
-    assert "find /I" not in script
-    assert 'tasklist /FI "IMAGENAME eq JoensAutoDraw.exe"' in script
-    assert 'move /Y "%NEW%" "%TARGET%"' in script
+    assert "$PidToWait = 12345" in script
+    assert "Get-Process -Id $PidToWait" in script
+    assert "Get-Process -Name 'JoensAutoDraw'" in script
+    assert "Move-Item -LiteralPath $NewExe -Destination $TargetExe" in script
+    assert "Start-Process -LiteralPath $TargetExe" in script
     assert "JoensAutoDraw-update.log" in script
     assert "Update installed. Click OK to start JoensAutoDraw." in script
-    assert 'cmd /c start "" /D "%TARGET_DIR%" "%TARGET%"' in script
-    assert "PyInstaller temp settle" in script
+    assert "findstr" not in script.lower()
+    assert "tasklist" not in script.lower()
+    assert "find.exe" not in script.lower()
 
 
-def test_build_hidden_launcher_vbs_runs_batch_hidden() -> None:
-    from autopaint.updater import build_hidden_launcher_vbs
-
-    vbs = build_hidden_launcher_vbs(Path(r"C:\Temp\JoensAutoDraw-update.bat"))
+def test_build_hidden_launcher_vbs_runs_powershell_hidden() -> None:
+    vbs = build_hidden_launcher_vbs(Path(r"C:\Temp\JoensAutoDraw-update.ps1"))
     assert "WScript.Shell" in vbs
-    assert "JoensAutoDraw-update.bat" in vbs
+    assert "JoensAutoDraw-update.ps1" in vbs
+    assert "powershell.exe" in vbs.lower()
+    assert "-WindowStyle Hidden" in vbs
     assert ", 0, False" in vbs

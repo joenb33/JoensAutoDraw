@@ -17,8 +17,7 @@ EXE_NAME = "JoensAutoDraw.exe"
 BACKUP_EXE_NAME = "JoensAutoDraw.exe.bak"
 UPDATE_LOG_NAME = "JoensAutoDraw-update.log"
 USER_AGENT = f"JoensAutoDraw/{__version__}"
-# Seconds to wait after replacing the exe so PyInstaller one-file temp (_MEI*) can finish cleanup.
-_PYINSTALLER_SETTLE_PINGS = 12
+_PYINSTALLER_SETTLE_SECONDS = 12
 
 
 @dataclass(frozen=True)
@@ -107,112 +106,118 @@ def download_update(info: UpdateInfo, timeout: float = 180.0) -> Path:
     return destination
 
 
-def _batch_quote(value: str) -> str:
-    return value.replace("%", "%%").replace('"', '""')
+def _ps_quote(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
-    """CMD helper: wait for exit, replace exe, pause for PyInstaller cleanup, relaunch."""
-    new_path = _batch_quote(str(new_exe.resolve()))
-    target_path = _batch_quote(str(target.resolve()))
-    target_dir = _batch_quote(str(target.parent.resolve()))
-    backup_path = _batch_quote(str(target.parent / BACKUP_EXE_NAME))
-    log_path = _batch_quote(str(update_log_path(target)))
+    """Hidden PowerShell helper: wait, replace exe, settle, confirm, relaunch."""
+    new_path = _ps_quote(str(new_exe.resolve()))
+    target_path = _ps_quote(str(target.resolve()))
+    target_dir = _ps_quote(str(target.parent.resolve()))
+    backup_path = _ps_quote(str(target.parent / BACKUP_EXE_NAME))
+    log_path = _ps_quote(str(update_log_path(target)))
     return "\r\n".join(
         [
-            "@echo off",
-            "setlocal EnableExtensions EnableDelayedExpansion",
-            f'set "NEW={new_path}"',
-            f'set "TARGET={target_path}"',
-            f'set "TARGET_DIR={target_dir}"',
-            f'set "BACKUP={backup_path}"',
-            f'set "LOG={log_path}"',
-            f"set /a PID={int(pid)}",
-            ">>\"%LOG%\" echo.",
-            ">>\"%LOG%\" echo [%date% %time%] JoensAutoDraw updater started (pid=%PID%).",
-            ">>\"%LOG%\" echo NEW=\"%NEW%\"",
-            ">>\"%LOG%\" echo TARGET=\"%TARGET%\"",
-            ">>\"%LOG%\" echo [%date% %time%] Waiting for process %PID% to exit...",
-            "set /a WAIT=0",
-            ":waitpid",
-            "rem Wait loops parse tasklist INFO lines directly (no pipe to find.exe).",
-            "set \"TLINE=\"",
-            "for /f \"delims=\" %%L in ('tasklist /FI \"PID eq %PID%\" /NH 2^>nul') do set \"TLINE=%%L\"",
-            "if defined TLINE (",
-            "  if /I not \"!TLINE:~0,4!\"==\"INFO\" (",
-            "    timeout /t 1 /nobreak >nul",
-            "    set /a WAIT+=1",
-            "    if !WAIT! lss 120 goto waitpid",
-            "  )",
-            ")",
-            ">>\"%LOG%\" echo [%date% %time%] Process wait finished (waited !WAIT!s).",
-            ">>\"%LOG%\" echo [%date% %time%] PyInstaller temp settle (initial)...",
-            f"ping -n {_PYINSTALLER_SETTLE_PINGS} 127.0.0.1 >nul",
-            ">>\"%LOG%\" echo [%date% %time%] Waiting for JoensAutoDraw.exe processes to exit...",
-            "set /a IMAGEWAIT=0",
-            ":waitimage",
-            "set \"TLINE=\"",
-            "for /f \"delims=\" %%L in ('tasklist /FI \"IMAGENAME eq JoensAutoDraw.exe\" /NH 2^>nul') do set \"TLINE=%%L\"",
-            "if defined TLINE (",
-            "  if /I not \"!TLINE:~0,4!\"==\"INFO\" (",
-            "    timeout /t 1 /nobreak >nul",
-            "    set /a IMAGEWAIT+=1",
-            "    if !IMAGEWAIT! lss 90 goto waitimage",
-            "  )",
-            ")",
-            ">>\"%LOG%\" echo [%date% %time%] No JoensAutoDraw.exe processes (waited !IMAGEWAIT!s).",
-            "timeout /t 2 /nobreak >nul",
-            'if not exist "%NEW%" (',
-            '  >>"%LOG%" echo ERROR: Staging file missing: "%NEW%"',
-            "  goto :fail",
-            ")",
-            'for %%A in ("%NEW%") do set NEW_SIZE=%%~zA',
-            "if !NEW_SIZE! lss 500000 (",
-            '  >>"%LOG%" echo ERROR: Staging file too small: !NEW_SIZE! bytes',
-            "  goto :fail",
-            ")",
-            "set /a RETRY=0",
-            ":replacetry",
-            'if exist "%BACKUP%" del /F /Q "%BACKUP%" >>"%LOG%" 2>&1',
-            'if exist "%TARGET%" (',
-            f'  ren "%TARGET%" "{BACKUP_EXE_NAME}" >>"%LOG%" 2>&1',
-            ")",
-            'move /Y "%NEW%" "%TARGET%" >>"%LOG%" 2>&1',
-            "if %ERRORLEVEL% neq 0 (",
-            "  set /a RETRY+=1",
-            "  if !RETRY! lss 40 (",
-            "    timeout /t 1 /nobreak >nul",
-            "    goto :replacetry",
-            "  )",
-            '  >>"%LOG%" echo ERROR: Could not replace executable after !RETRY! attempts.',
-            '  if exist "%TARGET%" del /F /Q "%TARGET%" >>"%LOG%" 2>&1',
-            '  if exist "%BACKUP%" move /Y "%BACKUP%" "%TARGET%" >>"%LOG%" 2>&1',
-            "  goto :fail",
-            ")",
-            'if exist "%BACKUP%" del /F /Q "%BACKUP%" >>"%LOG%" 2>&1',
-            ">>\"%LOG%\" echo [%date% %time%] Replace succeeded.",
-            ">>\"%LOG%\" echo [%date% %time%] PyInstaller temp settle (post-replace)...",
-            f"ping -n {_PYINSTALLER_SETTLE_PINGS} 127.0.0.1 >nul",
-            'mshta "javascript:var s=new ActiveXObject(''WScript.Shell'');s.Popup(''Update installed. Click OK to start JoensAutoDraw.'',0,''JoensAutoDraw Update'',64);close()"',
-            "ping -n 4 127.0.0.1 >nul",
-            'cmd /c start "" /D "%TARGET_DIR%" "%TARGET%"',
-            ">>\"%LOG%\" echo [%date% %time%] Launched updated app.",
-            "del \"%~f0\"",
-            "exit /b 0",
-            ":fail",
-            ">>\"%LOG%\" echo [%date% %time%] Update failed. See log above.",
-            'mshta "javascript:var s=new ActiveXObject(''WScript.Shell'');s.Popup(''JoensAutoDraw could not apply the update automatically.\\n\\nOpen JoensAutoDraw-update.log in the app folder for details.'',0,''JoensAutoDraw Update'',48);close()"',
-            "exit /b 1",
+            "$ErrorActionPreference = 'Continue'",
+            f"$PidToWait = {int(pid)}",
+            f"$NewExe = '{new_path}'",
+            f"$TargetExe = '{target_path}'",
+            f"$TargetDir = '{target_dir}'",
+            f"$BackupExe = '{backup_path}'",
+            f"$Log = '{log_path}'",
+            "function Write-UpdateLog([string]$Message) {",
+            "  $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message",
+            "  Add-Content -LiteralPath $Log -Value $line -Encoding UTF8",
+            "}",
+            "function Show-UpdatePopup([string]$Text, [int]$Icon) {",
+            "  try {",
+            "    $ws = New-Object -ComObject WScript.Shell",
+            "    $null = $ws.Popup($Text, 0, 'JoensAutoDraw Update', $Icon)",
+            "  } catch { }",
+            "}",
+            "Write-UpdateLog ''",
+            "Write-UpdateLog \"JoensAutoDraw updater started (pid=$PidToWait).\"",
+            "Write-UpdateLog \"NEW=$NewExe\"",
+            "Write-UpdateLog \"TARGET=$TargetExe\"",
+            "Write-UpdateLog 'Waiting for process to exit...'",
+            "$deadline = (Get-Date).AddSeconds(120)",
+            "$waited = 0",
+            "while ((Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {",
+            "  Start-Sleep -Milliseconds 500",
+            "  $waited++",
+            "}",
+            "Write-UpdateLog \"Process wait finished (polls=$waited).\"",
+            f"Start-Sleep -Seconds {_PYINSTALLER_SETTLE_SECONDS}",
+            "Write-UpdateLog 'Waiting for JoensAutoDraw.exe processes to exit...'",
+            "$procDeadline = (Get-Date).AddSeconds(90)",
+            "$imageWait = 0",
+            "while ((Get-Process -Name 'JoensAutoDraw' -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $procDeadline)) {",
+            "  Start-Sleep -Milliseconds 500",
+            "  $imageWait++",
+            "}",
+            "Write-UpdateLog \"No JoensAutoDraw.exe processes (polls=$imageWait).\"",
+            "Start-Sleep -Seconds 2",
+            "if (-not (Test-Path -LiteralPath $NewExe)) {",
+            "  Write-UpdateLog \"ERROR: Staging file missing: $NewExe\"",
+            "  Show-UpdatePopup 'Update failed. Open JoensAutoDraw-update.log in the app folder.' 48",
+            "  exit 1",
+            "}",
+            "$newSize = (Get-Item -LiteralPath $NewExe).Length",
+            "if ($newSize -lt 500000) {",
+            "  Write-UpdateLog \"ERROR: Staging file too small: $newSize bytes\"",
+            "  Show-UpdatePopup 'Update failed. Open JoensAutoDraw-update.log in the app folder.' 48",
+            "  exit 1",
+            "}",
+            "$copied = $false",
+            "for ($attempt = 0; $attempt -lt 40; $attempt++) {",
+            "  try {",
+            "    if (Test-Path -LiteralPath $BackupExe) {",
+            "      Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue",
+            "    }",
+            "    if (Test-Path -LiteralPath $TargetExe) {",
+            f"      Rename-Item -LiteralPath $TargetExe -NewName '{BACKUP_EXE_NAME}' -Force",
+            "    }",
+            "    Move-Item -LiteralPath $NewExe -Destination $TargetExe -Force",
+            "    if (Test-Path -LiteralPath $TargetExe) { $copied = $true; break }",
+            "  } catch { }",
+            "  Start-Sleep -Seconds 1",
+            "}",
+            "if (-not $copied) {",
+            "  Write-UpdateLog 'ERROR: Could not replace executable.'",
+            "  if (-not (Test-Path -LiteralPath $TargetExe) -and (Test-Path -LiteralPath $BackupExe)) {",
+            "    Move-Item -LiteralPath $BackupExe -Destination $TargetExe -Force -ErrorAction SilentlyContinue",
+            "  }",
+            "  Show-UpdatePopup 'Update failed. Open JoensAutoDraw-update.log in the app folder.' 48",
+            "  exit 1",
+            "}",
+            "if (Test-Path -LiteralPath $BackupExe) {",
+            "  Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue",
+            "}",
+            "Write-UpdateLog 'Replace succeeded.'",
+            f"Start-Sleep -Seconds {_PYINSTALLER_SETTLE_SECONDS}",
+            "Write-UpdateLog 'PyInstaller temp settle complete.'",
+            "Show-UpdatePopup 'Update installed. Click OK to start JoensAutoDraw.' 64",
+            "Start-Sleep -Seconds 3",
+            "Start-Process -LiteralPath $TargetExe -WorkingDirectory $TargetDir",
+            "Write-UpdateLog 'Launched updated app.'",
+            "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+            "exit 0",
         ]
     )
 
 
-def build_hidden_launcher_vbs(batch_path: Path) -> str:
-    """Run the batch file with window style 0 (completely hidden)."""
-    quoted = str(batch_path.resolve()).replace('"', '""')
+def build_hidden_launcher_vbs(script_path: Path) -> str:
+    """Run PowerShell hidden (window style 0)."""
+    quoted = str(script_path.resolve()).replace('"', '""')
+    ps_command = (
+        f"powershell.exe -NoProfile -ExecutionPolicy Bypass "
+        f'-WindowStyle Hidden -File "{quoted}"'
+    )
+    ps_quoted = ps_command.replace('"', '""')
     return (
         "Set sh = CreateObject(\"WScript.Shell\")\r\n"
-        f'sh.Run "cmd.exe /q /c ""{quoted}""", 0, False\r\n'
+        f'sh.Run "{ps_quoted}", 0, False\r\n'
     )
 
 
@@ -237,8 +242,14 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
         raise RuntimeError("Updates can only be applied to the packaged executable.")
 
     temp_dir = Path(tempfile.gettempdir())
-    helper = temp_dir / "JoensAutoDraw-update.bat"
+    helper = temp_dir / "JoensAutoDraw-update.ps1"
     launcher = temp_dir / "JoensAutoDraw-update.vbs"
+    legacy_bat = temp_dir / "JoensAutoDraw-update.bat"
+    if legacy_bat.exists():
+        try:
+            legacy_bat.unlink()
+        except OSError:
+            pass
     helper.write_text(
         build_update_helper_script(
             pid=pid if pid is not None else os.getpid(),
