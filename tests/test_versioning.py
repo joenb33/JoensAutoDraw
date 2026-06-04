@@ -73,9 +73,22 @@ def test_build_update_helper_script_waits_for_process_and_replaces() -> None:
 
     assert "set /a PID=12345" in script
     assert 'tasklist /FI "PID eq %PID%"' in script
-    assert 'findstr /I /C:"No tasks"' in script
+    assert "TLINE:~0,4" in script
+    assert "findstr" not in script.lower()
     assert 'find "%PID%"' not in script
+    assert "find /I" not in script
     assert 'tasklist /FI "IMAGENAME eq JoensAutoDraw.exe"' in script
     assert 'move /Y "%NEW%" "%TARGET%"' in script
     assert "JoensAutoDraw-update.log" in script
-    assert 'start "" /D "%TARGET_DIR%" "%TARGET%"' in script
+    assert "Update installed. Click OK to start JoensAutoDraw." in script
+    assert 'cmd /c start "" /D "%TARGET_DIR%" "%TARGET%"' in script
+    assert "PyInstaller temp settle" in script
+
+
+def test_build_hidden_launcher_vbs_runs_batch_hidden() -> None:
+    from autopaint.updater import build_hidden_launcher_vbs
+
+    vbs = build_hidden_launcher_vbs(Path(r"C:\Temp\JoensAutoDraw-update.bat"))
+    assert "WScript.Shell" in vbs
+    assert "JoensAutoDraw-update.bat" in vbs
+    assert ", 0, False" in vbs

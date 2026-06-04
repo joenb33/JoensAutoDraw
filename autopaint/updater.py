@@ -17,6 +17,8 @@ EXE_NAME = "JoensAutoDraw.exe"
 BACKUP_EXE_NAME = "JoensAutoDraw.exe.bak"
 UPDATE_LOG_NAME = "JoensAutoDraw-update.log"
 USER_AGENT = f"JoensAutoDraw/{__version__}"
+# Seconds to wait after replacing the exe so PyInstaller one-file temp (_MEI*) can finish cleanup.
+_PYINSTALLER_SETTLE_PINGS = 12
 
 
 @dataclass(frozen=True)
@@ -110,7 +112,7 @@ def _batch_quote(value: str) -> str:
 
 
 def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
-    """Hidden CMD helper: wait for exit, rename-replace exe, relaunch, log to app folder."""
+    """CMD helper: wait for exit, replace exe, pause for PyInstaller cleanup, relaunch."""
     new_path = _batch_quote(str(new_exe.resolve()))
     target_path = _batch_quote(str(target.resolve()))
     target_dir = _batch_quote(str(target.parent.resolve()))
@@ -133,26 +135,32 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             ">>\"%LOG%\" echo [%date% %time%] Waiting for process %PID% to exit...",
             "set /a WAIT=0",
             ":waitpid",
-            "rem Do not use find with PID digits — it matches substrings in other PIDs (e.g. 135300).",
-            'tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /I /C:"No tasks" >nul',
-            "if errorlevel 1 (",
-            "  timeout /t 1 /nobreak >nul",
-            "  set /a WAIT+=1",
-            "  if !WAIT! lss 120 goto waitpid",
+            "rem Wait loops parse tasklist INFO lines directly (no pipe to find.exe).",
+            "set \"TLINE=\"",
+            "for /f \"delims=\" %%L in ('tasklist /FI \"PID eq %PID%\" /NH 2^>nul') do set \"TLINE=%%L\"",
+            "if defined TLINE (",
+            "  if /I not \"!TLINE:~0,4!\"==\"INFO\" (",
+            "    timeout /t 1 /nobreak >nul",
+            "    set /a WAIT+=1",
+            "    if !WAIT! lss 120 goto waitpid",
+            "  )",
             ")",
             ">>\"%LOG%\" echo [%date% %time%] Process wait finished (waited !WAIT!s).",
-            "rem Allow PyInstaller one-file temp extraction to finish cleanup",
-            "timeout /t 4 /nobreak >nul",
+            ">>\"%LOG%\" echo [%date% %time%] PyInstaller temp settle (initial)...",
+            f"ping -n {_PYINSTALLER_SETTLE_PINGS} 127.0.0.1 >nul",
             ">>\"%LOG%\" echo [%date% %time%] Waiting for JoensAutoDraw.exe processes to exit...",
             "set /a IMAGEWAIT=0",
             ":waitimage",
-            'tasklist /FI "IMAGENAME eq JoensAutoDraw.exe" /NH 2>nul | findstr /I /C:"No tasks" >nul',
-            "if errorlevel 1 (",
-            "  timeout /t 1 /nobreak >nul",
-            "  set /a IMAGEWAIT+=1",
-            "  if !IMAGEWAIT! lss 90 goto waitimage",
+            "set \"TLINE=\"",
+            "for /f \"delims=\" %%L in ('tasklist /FI \"IMAGENAME eq JoensAutoDraw.exe\" /NH 2^>nul') do set \"TLINE=%%L\"",
+            "if defined TLINE (",
+            "  if /I not \"!TLINE:~0,4!\"==\"INFO\" (",
+            "    timeout /t 1 /nobreak >nul",
+            "    set /a IMAGEWAIT+=1",
+            "    if !IMAGEWAIT! lss 90 goto waitimage",
+            "  )",
             ")",
-            ">>\"%LOG%\" echo [%date% %time%] No running JoensAutoDraw.exe processes.",
+            ">>\"%LOG%\" echo [%date% %time%] No JoensAutoDraw.exe processes (waited !IMAGEWAIT!s).",
             "timeout /t 2 /nobreak >nul",
             'if not exist "%NEW%" (',
             '  >>"%LOG%" echo ERROR: Staging file missing: "%NEW%"',
@@ -183,8 +191,11 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             ")",
             'if exist "%BACKUP%" del /F /Q "%BACKUP%" >>"%LOG%" 2>&1',
             ">>\"%LOG%\" echo [%date% %time%] Replace succeeded.",
-            "timeout /t 2 /nobreak >nul",
-            'start "" /D "%TARGET_DIR%" "%TARGET%"',
+            ">>\"%LOG%\" echo [%date% %time%] PyInstaller temp settle (post-replace)...",
+            f"ping -n {_PYINSTALLER_SETTLE_PINGS} 127.0.0.1 >nul",
+            'mshta "javascript:var s=new ActiveXObject(''WScript.Shell'');s.Popup(''Update installed. Click OK to start JoensAutoDraw.'',0,''JoensAutoDraw Update'',64);close()"',
+            "ping -n 4 127.0.0.1 >nul",
+            'cmd /c start "" /D "%TARGET_DIR%" "%TARGET%"',
             ">>\"%LOG%\" echo [%date% %time%] Launched updated app.",
             "del \"%~f0\"",
             "exit /b 0",
@@ -193,6 +204,15 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             'mshta "javascript:var s=new ActiveXObject(''WScript.Shell'');s.Popup(''JoensAutoDraw could not apply the update automatically.\\n\\nOpen JoensAutoDraw-update.log in the app folder for details.'',0,''JoensAutoDraw Update'',48);close()"',
             "exit /b 1",
         ]
+    )
+
+
+def build_hidden_launcher_vbs(batch_path: Path) -> str:
+    """Run the batch file with window style 0 (completely hidden)."""
+    quoted = str(batch_path.resolve()).replace('"', '""')
+    return (
+        "Set sh = CreateObject(\"WScript.Shell\")\r\n"
+        f'sh.Run "cmd.exe /q /c ""{quoted}""", 0, False\r\n'
     )
 
 
@@ -216,7 +236,9 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
     if current is None:
         raise RuntimeError("Updates can only be applied to the packaged executable.")
 
-    helper = Path(tempfile.gettempdir()) / "JoensAutoDraw-update.bat"
+    temp_dir = Path(tempfile.gettempdir())
+    helper = temp_dir / "JoensAutoDraw-update.bat"
+    launcher = temp_dir / "JoensAutoDraw-update.vbs"
     helper.write_text(
         build_update_helper_script(
             pid=pid if pid is not None else os.getpid(),
@@ -226,8 +248,9 @@ def schedule_apply_update(new_exe: Path, *, pid: int | None = None) -> None:
         encoding="utf-8",
         newline="\r\n",
     )
+    launcher.write_text(build_hidden_launcher_vbs(helper), encoding="utf-8", newline="\r\n")
     subprocess.Popen(
-        ["cmd.exe", "/c", str(helper)],
+        ["wscript.exe", "//nologo", str(launcher)],
         close_fds=True,
         **_windows_subprocess_kwargs(),
     )
