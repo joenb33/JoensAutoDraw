@@ -73,6 +73,8 @@ def test_build_update_helper_script_waits_for_process_and_replaces() -> None:
 
     assert "set /a PID=12345" in script
     assert 'tasklist /FI "PID eq %PID%"' in script
+    assert 'findstr /I /C:"No tasks"' in script
+    assert 'find "%PID%"' not in script
     assert 'tasklist /FI "IMAGENAME eq JoensAutoDraw.exe"' in script
     assert 'move /Y "%NEW%" "%TARGET%"' in script
     assert "JoensAutoDraw-update.log" in script
