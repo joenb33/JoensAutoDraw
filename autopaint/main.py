@@ -11,6 +11,7 @@ from autopaint.failsafe import EmergencyStop, esc_backend_description
 from autopaint.validation import DrawValidationError
 from autopaint.image_processing import show_preview
 from autopaint.pipeline import create_plan, execute_draw
+from autopaint.types import Rect
 
 
 _DEBUG_LOG_ENABLED = False
@@ -69,6 +70,33 @@ def _threshold_int(value: str) -> int:
     if parsed < 0 or parsed > 255:
         raise argparse.ArgumentTypeError("Must be in range 0..255.")
     return parsed
+
+
+def _target_rect(value: str) -> Rect:
+    parts = value.split(",")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "Must be four comma-separated integers: left,top,right,bottom."
+        )
+    try:
+        left, top, right, bottom = (int(part.strip()) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "Target rectangle values must be integers."
+        ) from exc
+    if right <= left or bottom <= top:
+        raise argparse.ArgumentTypeError("Target rectangle must have positive size.")
+    return Rect(left=left, top=top, right=right, bottom=bottom)
+
+
+def _dry_run_target_rect(source_width: int, source_height: int) -> Rect:
+    offset = 10
+    return Rect(
+        left=offset,
+        top=offset,
+        right=offset + max(5, source_width - 1),
+        bottom=offset + max(5, source_height - 1),
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -138,6 +166,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--preview", action="store_true", help="Show preview windows.")
     parser.add_argument("--dry-run", action="store_true", help="Print draw actions only.")
+    parser.add_argument(
+        "--target-rect",
+        type=_target_rect,
+        default=None,
+        metavar="L,T,R,B",
+        help=(
+            "Use an explicit screen rectangle instead of prompting for mouse capture. "
+            "Dry-run defaults to a source-sized rectangle when omitted."
+        ),
+    )
     parser.add_argument("--invert", action="store_true", help="Invert threshold behavior.")
     parser.add_argument(
         "--otsu",
@@ -328,10 +366,15 @@ def main() -> int:
             planned=plan.preview_polylines if args.mode == "contour" else plan.preview_segments,
         )
 
+    target_rect = args.target_rect
+    if target_rect is None and args.dry_run:
+        target_rect = _dry_run_target_rect(plan.source_width, plan.source_height)
+
     execute_draw(
         draw_mode=args.mode,
         plan=plan,
         draw_config=draw_conf,
+        target_rect=target_rect,
     )
     _debug_log(
         "H4",

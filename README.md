@@ -176,9 +176,15 @@ python -m autopaint.main --image ".\examples\cat.png" --mode contour --dry-run
 | `--contour-epsilon` | `1.2` | Contour simplification |
 | `--speed` | `0.002` | Move duration (seconds) |
 | `--dry-run` | off | No mouse movement |
+| `--target-rect` | dry-run only | Explicit screen rectangle as `left,top,right,bottom` |
 | `--preview` | off | OpenCV preview windows |
 
 Full list: `python -m autopaint.main --help`
+
+In CLI dry-run mode, JoensAutoDraw uses a source-sized virtual target when
+`--target-rect` is omitted, so the command can run without mouse-position prompts.
+For a real draw, omit `--target-rect` to capture corners interactively or pass exact
+screen coordinates yourself.
 
 ---
 

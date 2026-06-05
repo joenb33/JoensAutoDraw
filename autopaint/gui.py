@@ -146,7 +146,7 @@ class AutoPaintGui(ctk.CTk):
                         ):
                             self.after(0, lambda: self._apply_update_and_restart(downloaded))
                         else:
-                            self._append_log("Update will apply on next manual restart.")
+                            self._append_log("Update downloaded but not installed. Restart update when ready.")
 
                     self.after(0, offer_restart)
 
@@ -368,19 +368,22 @@ class AutoPaintGui(ctk.CTk):
         }.get(step_key, step_key)
 
     def _set_pipeline_step(self, step_key: str, state: str) -> None:
-        label = self._pipeline_labels.get(step_key)
-        if label is None:
-            return
-        title = self._pipeline_step_title(step_key)
-        text = f"{title}\n{state}"
-        color_map = {
-            "waiting": "#9ca3af",
-            "ready": "#fbbf24",
-            "done": "#22c55e",
-            "running": ACCENT_COLOR,
-            "error": "#f87171",
-        }
-        label.configure(text=text, text_color=color_map.get(state, "#e5e7eb"))
+        def update() -> None:
+            label = self._pipeline_labels.get(step_key)
+            if label is None:
+                return
+            title = self._pipeline_step_title(step_key)
+            text = f"{title}\n{state}"
+            color_map = {
+                "waiting": "#9ca3af",
+                "ready": "#fbbf24",
+                "done": "#22c55e",
+                "running": ACCENT_COLOR,
+                "error": "#f87171",
+            }
+            label.configure(text=text, text_color=color_map.get(state, "#e5e7eb"))
+
+        self.after(0, update)
 
     def _reference_rect(self, plan) -> Rect:
         if self._selected_rect is not None:
@@ -407,36 +410,42 @@ class AutoPaintGui(ctk.CTk):
     def _update_toolpath_stats(self, plan) -> None:
         if self._toolpath_stats_label is None:
             return
-        draw_conf = self._build_draw()
-        source_size = RasterSize(width=plan.source_width, height=plan.source_height)
-        target_rect = self._reference_rect(plan)
-        commands = build_execution_commands(
-            plan=plan,
-            draw_mode=self.mode.get(),
-            draw_config=draw_conf,
-            target_rect=target_rect,
-            source_size=source_size,
-        )
-        stats = simulate_tool_commands(
-            commands=commands,
-            source_size=source_size,
-            target_rect=target_rect,
-            draw_config=draw_conf,
-        )
-        scale_note = ""
-        if self._selected_rect is not None and plan.source_width > 0:
-            from autopaint.drawer import _build_fit_transform
 
-            fit = _build_fit_transform(source_size, target_rect)
-            scale_note = f", screen={fit.scale:.2f}px/src"
-        self._toolpath_stats_label.configure(
-            text=(
-                "Toolpath stats: "
-                f"commands={len(commands)}, strokes={stats.stroke_count}, "
-                f"draw_pixels={stats.draw_pixel_events}, moves={stats.move_events}, "
-                f"est. time={stats.estimated_seconds:.1f}s{scale_note}"
+        def update() -> None:
+            if self._toolpath_stats_label is None:
+                return
+            draw_conf = self._build_draw()
+            source_size = RasterSize(width=plan.source_width, height=plan.source_height)
+            target_rect = self._reference_rect(plan)
+            commands = build_execution_commands(
+                plan=plan,
+                draw_mode=self.mode.get(),
+                draw_config=draw_conf,
+                target_rect=target_rect,
+                source_size=source_size,
             )
-        )
+            stats = simulate_tool_commands(
+                commands=commands,
+                source_size=source_size,
+                target_rect=target_rect,
+                draw_config=draw_conf,
+            )
+            scale_note = ""
+            if self._selected_rect is not None and plan.source_width > 0:
+                from autopaint.drawer import _build_fit_transform
+
+                fit = _build_fit_transform(source_size, target_rect)
+                scale_note = f", screen={fit.scale:.2f}px/src"
+            self._toolpath_stats_label.configure(
+                text=(
+                    "Toolpath stats: "
+                    f"commands={len(commands)}, strokes={stats.stroke_count}, "
+                    f"draw_pixels={stats.draw_pixel_events}, moves={stats.move_events}, "
+                    f"est. time={stats.estimated_seconds:.1f}s{scale_note}"
+                )
+            )
+
+        self.after(0, update)
 
     def _add_path_controls(self, parent: ctk.CTkScrollableFrame) -> None:
         row = 0
@@ -751,20 +760,24 @@ class AutoPaintGui(ctk.CTk):
     def _run_live_plan_worker(self) -> None:
         self._live_plan_generation += 1
         generation = self._live_plan_generation
+        try:
+            processing = self._build_processing()
+            contour_epsilon = float(self.contour_epsilon.get())
+            mode = self.mode.get()
+        except Exception:
+            return
 
         def worker() -> None:
             try:
-                processing = self._build_processing()
                 plan = create_plan(
                     processing=processing,
-                    contour_epsilon=float(self.contour_epsilon.get()),
+                    contour_epsilon=contour_epsilon,
                 )
             except Exception:
                 return
             if generation != self._live_plan_generation:
                 return
             self._last_plan = plan
-            mode = self.mode.get()
             self._update_previews(plan, mode=mode)
             self._update_toolpath_stats(plan)
             for warning in plan.import_warnings:

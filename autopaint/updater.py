@@ -18,6 +18,7 @@ BACKUP_EXE_NAME = "JoensAutoDraw.exe.bak"
 UPDATE_LOG_NAME = "JoensAutoDraw-update.log"
 USER_AGENT = f"JoensAutoDraw/{__version__}"
 _PYINSTALLER_SETTLE_SECONDS = 12
+MIN_UPDATE_EXE_SIZE_BYTES = 500_000
 
 
 @dataclass(frozen=True)
@@ -100,10 +101,36 @@ def _update_staging_path(version: str) -> Path:
 
 def download_update(info: UpdateInfo, timeout: float = 180.0) -> Path:
     destination = _update_staging_path(info.version)
+    partial = Path(f"{destination}.part")
     request = urllib.request.Request(info.download_url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as handle:
-        handle.write(response.read())
-    return destination
+    if partial.exists():
+        partial.unlink()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response, partial.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+        _validate_downloaded_exe(partial)
+        partial.replace(destination)
+        return destination
+    except Exception:
+        try:
+            partial.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _validate_downloaded_exe(path: Path) -> None:
+    size = path.stat().st_size
+    if size < MIN_UPDATE_EXE_SIZE_BYTES:
+        raise RuntimeError(f"Downloaded update is too small ({size} bytes).")
+    with path.open("rb") as handle:
+        magic = handle.read(2)
+    if magic != b"MZ":
+        raise RuntimeError("Downloaded update does not look like a Windows executable.")
 
 
 def _ps_quote(value: str) -> str:
@@ -126,11 +153,16 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             f"$TargetDir = '{target_dir}'",
             f"$BackupExe = '{backup_path}'",
             f"$Log = '{log_path}'",
+            f"$MinExeSize = {MIN_UPDATE_EXE_SIZE_BYTES}",
             "function Write-UpdateLog([string]$Message) {",
             "  $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message",
             "  Add-Content -LiteralPath $Log -Value $line -Encoding UTF8",
             "}",
             "function Show-UpdatePopup([string]$Text, [int]$Icon) {",
+            "  if ($env:JOENSAUTODRAW_UPDATE_SILENT -eq '1') {",
+            "    Write-UpdateLog \"Popup suppressed: $Text\"",
+            "    return",
+            "  }",
             "  try {",
             "    $ws = New-Object -ComObject WScript.Shell",
             "    $null = $ws.Popup($Text, 0, 'JoensAutoDraw Update', $Icon)",
@@ -164,7 +196,7 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             "  exit 1",
             "}",
             "$newSize = (Get-Item -LiteralPath $NewExe).Length",
-            "if ($newSize -lt 500000) {",
+            "if ($newSize -lt $MinExeSize) {",
             "  Write-UpdateLog \"ERROR: Staging file too small: $newSize bytes\"",
             "  Show-UpdatePopup 'Update failed. Open JoensAutoDraw-update.log in the app folder.' 48",
             "  exit 1",
@@ -172,15 +204,20 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             "$copied = $false",
             "for ($attempt = 0; $attempt -lt 40; $attempt++) {",
             "  try {",
-            "    if (Test-Path -LiteralPath $BackupExe) {",
-            "      Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue",
-            "    }",
             "    if (Test-Path -LiteralPath $TargetExe) {",
+            "      if (Test-Path -LiteralPath $BackupExe) {",
+            "        Remove-Item -LiteralPath $BackupExe -Force -ErrorAction SilentlyContinue",
+            "      }",
             f"      Rename-Item -LiteralPath $TargetExe -NewName '{BACKUP_EXE_NAME}' -Force",
             "    }",
             "    Move-Item -LiteralPath $NewExe -Destination $TargetExe -Force",
             "    if (Test-Path -LiteralPath $TargetExe) { $copied = $true; break }",
-            "  } catch { }",
+            "  } catch {",
+            "    Write-UpdateLog \"Replace attempt $attempt failed: $($_.Exception.Message)\"",
+            "    if (-not (Test-Path -LiteralPath $TargetExe) -and (Test-Path -LiteralPath $BackupExe)) {",
+            "      Move-Item -LiteralPath $BackupExe -Destination $TargetExe -Force -ErrorAction SilentlyContinue",
+            "    }",
+            "  }",
             "  Start-Sleep -Seconds 1",
             "}",
             "if (-not $copied) {",
@@ -198,9 +235,13 @@ def build_update_helper_script(*, pid: int, new_exe: Path, target: Path) -> str:
             f"Start-Sleep -Seconds {_PYINSTALLER_SETTLE_SECONDS}",
             "Write-UpdateLog 'PyInstaller temp settle complete.'",
             "Show-UpdatePopup 'Update installed. Click OK to start JoensAutoDraw.' 64",
-            "Start-Sleep -Seconds 3",
-            "Start-Process -LiteralPath $TargetExe -WorkingDirectory $TargetDir",
-            "Write-UpdateLog 'Launched updated app.'",
+            "if ($env:JOENSAUTODRAW_UPDATE_NO_RELAUNCH -eq '1') {",
+            "  Write-UpdateLog 'Relaunch skipped by environment.'",
+            "} else {",
+            "  Start-Sleep -Seconds 3",
+            "  Start-Process -LiteralPath $TargetExe -WorkingDirectory $TargetDir",
+            "  Write-UpdateLog 'Launched updated app.'",
+            "}",
             "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
             "exit 0",
         ]

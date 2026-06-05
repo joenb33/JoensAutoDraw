@@ -50,7 +50,8 @@ The GUI also shows a confirmation dialog before **Draw Now**.
 
 - **Default in the GUI** (`Dry run` checked on startup).
 - Logs planned actions without moving the mouse or pressing buttons.
-- CLI: pass `--dry-run`.
+- CLI: pass `--dry-run`. Without `--target-rect`, CLI dry-run uses a source-sized
+  virtual target and never asks for mouse-position capture.
 
 Always dry-run after changing speed, mode, or source file.
 

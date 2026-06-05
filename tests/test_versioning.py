@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from autopaint import versioning
+from autopaint import updater, versioning
 from autopaint.updater import (
+    UpdateInfo,
     build_hidden_launcher_vbs,
     build_update_helper_script,
+    download_update,
     fetch_latest_update,
     is_newer_version,
     parse_version,
@@ -76,6 +80,9 @@ def test_build_update_helper_script_uses_powershell_without_find() -> None:
     assert "Get-Process -Id $PidToWait" in script
     assert "Get-Process -Name 'JoensAutoDraw'" in script
     assert "Move-Item -LiteralPath $NewExe -Destination $TargetExe" in script
+    assert "Move-Item -LiteralPath $BackupExe -Destination $TargetExe" in script
+    assert "JOENSAUTODRAW_UPDATE_SILENT" in script
+    assert "JOENSAUTODRAW_UPDATE_NO_RELAUNCH" in script
     assert "Start-Process -LiteralPath $TargetExe" in script
     assert "JoensAutoDraw-update.log" in script
     assert "Update installed. Click OK to start JoensAutoDraw." in script
@@ -91,3 +98,119 @@ def test_build_hidden_launcher_vbs_runs_powershell_hidden() -> None:
     assert "powershell.exe" in vbs.lower()
     assert "-WindowStyle Hidden" in vbs
     assert ", 0, False" in vbs
+
+
+class _ChunkedResponse:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self._offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        if self._offset >= len(self._data):
+            return b""
+        if size < 0:
+            size = len(self._data) - self._offset
+        start = self._offset
+        self._offset = min(len(self._data), self._offset + size)
+        return self._data[start : self._offset]
+
+
+def test_download_update_writes_complete_exe_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "JoensAutoDraw.exe.9.9.9.new"
+    monkeypatch.setattr(updater, "_update_staging_path", lambda _version: destination)
+    monkeypatch.setattr(updater, "MIN_UPDATE_EXE_SIZE_BYTES", 4)
+    monkeypatch.setattr(
+        updater.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _ChunkedResponse(b"MZfake-exe"),
+    )
+
+    result = download_update(
+        UpdateInfo(
+            version="9.9.9",
+            download_url="https://example.com/JoensAutoDraw.exe",
+            release_url="https://example.com/release",
+        )
+    )
+
+    assert result == destination
+    assert destination.read_bytes() == b"MZfake-exe"
+    assert not Path(f"{destination}.part").exists()
+
+
+def test_download_update_removes_partial_file_on_invalid_exe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "JoensAutoDraw.exe.9.9.9.new"
+    monkeypatch.setattr(updater, "_update_staging_path", lambda _version: destination)
+    monkeypatch.setattr(updater, "MIN_UPDATE_EXE_SIZE_BYTES", 4)
+    monkeypatch.setattr(
+        updater.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _ChunkedResponse(b"not-an-exe"),
+    )
+
+    with pytest.raises(RuntimeError, match="Windows executable"):
+        download_update(
+            UpdateInfo(
+                version="9.9.9",
+                download_url="https://example.com/JoensAutoDraw.exe",
+                release_url="https://example.com/release",
+            )
+        )
+
+    assert not destination.exists()
+    assert not Path(f"{destination}.part").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell helper is Windows-only")
+def test_update_helper_replaces_target_and_removes_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(updater, "_PYINSTALLER_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(updater, "MIN_UPDATE_EXE_SIZE_BYTES", 1)
+    target = tmp_path / "JoensAutoDraw.exe"
+    staged = tmp_path / "JoensAutoDraw.exe.9.9.9.new"
+    script_path = tmp_path / "JoensAutoDraw-update.ps1"
+    target.write_bytes(b"old")
+    staged.write_bytes(b"new")
+    script_path.write_text(
+        updater.build_update_helper_script(pid=99999999, new_exe=staged, target=target),
+        encoding="utf-8",
+        newline="\r\n",
+    )
+
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "$env:JOENSAUTODRAW_UPDATE_SILENT='1'; "
+                "$env:JOENSAUTODRAW_UPDATE_NO_RELAUNCH='1'; "
+                f"& '{script_path}'"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert target.read_bytes() == b"new"
+    assert not staged.exists()
+    assert not (tmp_path / "JoensAutoDraw.exe.bak").exists()
+    assert "Replace succeeded." in (tmp_path / "JoensAutoDraw-update.log").read_text(
+        encoding="utf-8"
+    )
