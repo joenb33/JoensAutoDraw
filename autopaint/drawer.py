@@ -88,6 +88,16 @@ _SCREEN_WALK_STEP = 0.65
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
 _MOUSEEVENTF_MOVE = 0x0001
+_MOUSEEVENTF_ABSOLUTE = 0x8000
+_MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+_SM_XVIRTUALSCREEN = 76
+_SM_YVIRTUALSCREEN = 77
+_SM_CXVIRTUALSCREEN = 78
+_SM_CYVIRTUALSCREEN = 79
+
+_ABSOLUTE_RANGE = 65535
+
 _DEBUG_LOG_ENABLED = False
 _TRACE_MOVE_EVENTS = False
 _TRACE_MAX_EVENT_LOGS = 0
@@ -398,12 +408,84 @@ def _assert_in_bounds(x: int, y: int, rect: Rect) -> None:
         raise BoundsViolation(f"Point ({x}, {y}) out of bounds for target rect {rect}.")
 
 
+try:  # pragma: no cover - platform specific
+    from ctypes import wintypes
+
+    _ULONG_PTR = wintypes.WPARAM
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", _ULONG_PTR),
+        ]
+
+    class _INPUT(ctypes.Structure):
+        class _INPUT_UNION(ctypes.Union):
+            _fields_ = [("mi", _MOUSEINPUT)]
+
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _INPUT_UNION)]
+
+    _INPUT_MOUSE = 0
+except Exception:  # pragma: no cover - non-Windows import guard
+    _MOUSEINPUT = None  # type: ignore[assignment]
+    _INPUT = None  # type: ignore[assignment]
+    _INPUT_MOUSE = 0
+
+
+def _send_mouse_input(flags: int, dx: int = 0, dy: int = 0) -> None:
+    """Inject a single real mouse event into the input stream via SendInput.
+
+    Unlike SetCursorPos (a silent cursor warp), SendInput reports genuine
+    hardware-like input, so any surface that tracks drawing through real mouse
+    movement (web canvases, games, several Paint variants) sees continuous
+    motion between button down and up instead of only the endpoints.
+    """
+    event = _INPUT(type=_INPUT_MOUSE)
+    event.mi = _MOUSEINPUT(dx, dy, 0, flags, 0, 0)
+    ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT))
+
+
+def _to_absolute_coords(x: int, y: int) -> tuple[int, int]:
+    """Normalize a virtual-desktop pixel to SendInput's 0..65535 absolute range."""
+    get_metric = ctypes.windll.user32.GetSystemMetrics
+    virtual_left = get_metric(_SM_XVIRTUALSCREEN)
+    virtual_top = get_metric(_SM_YVIRTUALSCREEN)
+    virtual_width = get_metric(_SM_CXVIRTUALSCREEN) or 1
+    virtual_height = get_metric(_SM_CYVIRTUALSCREEN) or 1
+    norm_x = int(round((x - virtual_left) * _ABSOLUTE_RANGE / max(virtual_width - 1, 1)))
+    norm_y = int(round((y - virtual_top) * _ABSOLUTE_RANGE / max(virtual_height - 1, 1)))
+    return norm_x, norm_y
+
+
+def _inject_mouse_move_absolute(x: int, y: int) -> None:
+    norm_x, norm_y = _to_absolute_coords(int(x), int(y))
+    _send_mouse_input(
+        _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
+        norm_x,
+        norm_y,
+    )
+
+
 def _move_cursor_fast(x: int, y: int) -> None:
+    # Inject a genuine, hardware-like move so every surface registers real
+    # movement, then pin the exact pixel with SetCursorPos (SendInput's absolute
+    # normalization can round by a pixel).
+    _inject_mouse_move_absolute(int(x), int(y))
     ctypes.windll.user32.SetCursorPos(int(x), int(y))
 
 
 def _send_mouse_move_event() -> None:
-    ctypes.windll.user32.mouse_event(_MOUSEEVENTF_MOVE, 0, 0, 0, 0)
+    # Retained for callers that want an explicit movement nudge at the current
+    # cursor position. SetCursorPos already pinned the pixel, so resolve it and
+    # inject a real movement event there.
+    point = wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+    _inject_mouse_move_absolute(point.x, point.y)
 
 
 def _mouse_left_down_fast() -> None:
@@ -490,13 +572,13 @@ def _decimate_points_for_compatibility(
 
 
 def _drag_cursor(x: int, y: int, draw_config: DrawConfig) -> None:
+    # _move_cursor_fast injects a genuine SendInput move, so the held button is
+    # carried with real motion and surfaces interpolate a stroke (not a dot).
+    _move_cursor_fast(x, y)
     if draw_config.compatibility_mode:
-        _move_cursor_fast(x, y)
-        _send_mouse_move_event()
         if draw_config.step_pause_seconds > 0:
             _sleep_if_needed(min(draw_config.step_pause_seconds, 0.001))
         return
-    _move_cursor_fast(x, y)
     _sleep_if_needed(draw_config.step_pause_seconds)
 
 

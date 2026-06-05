@@ -133,20 +133,16 @@ def test_simulate_tool_commands_counts_draw_pixels() -> None:
     assert stats.estimated_seconds > 0
 
 
-def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = {"fast": 0, "move_event": 0, "moveTo": 0}
+def test_drag_cursor_injects_real_move_in_compatibility_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"fast": [], "moveTo": 0}
 
     def _fast(x: int, y: int) -> None:
-        calls["fast"] += 1
+        calls["fast"].append((x, y))
 
     def _move_to(*args: object, **kwargs: object) -> None:
         calls["moveTo"] += 1
 
     monkeypatch.setattr("autopaint.drawer._move_cursor_fast", _fast)
-    monkeypatch.setattr(
-        "autopaint.drawer._send_mouse_move_event",
-        lambda: calls.__setitem__("move_event", calls["move_event"] + 1),
-    )
     monkeypatch.setattr("autopaint.drawer.pyautogui.moveTo", _move_to)
 
     draw_config = DrawConfig(
@@ -157,9 +153,29 @@ def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.M
     )
     _drag_cursor(10, 20, draw_config)
 
-    assert calls["fast"] == 1
-    assert calls["move_event"] == 1
+    assert calls["fast"] == [(10, 20)]
     assert calls["moveTo"] == 0
+
+
+def test_move_cursor_fast_injects_absolute_move_then_pins_pixel(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        "autopaint.drawer._inject_mouse_move_absolute",
+        lambda x, y: events.append(f"inject:{x},{y}"),
+    )
+
+    class _FakeUser32:
+        def SetCursorPos(self, x: int, y: int) -> None:
+            events.append(f"setpos:{x},{y}")
+
+    import autopaint.drawer as drawer_module
+
+    monkeypatch.setattr(drawer_module.ctypes, "windll", type("W", (), {"user32": _FakeUser32()}))
+
+    drawer_module._move_cursor_fast(33, 44)
+
+    assert events == ["inject:33,44", "setpos:33,44"]
 
 
 def test_compatibility_stride_keeps_dense_path_at_high_speed() -> None:
