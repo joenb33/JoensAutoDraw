@@ -83,7 +83,10 @@ def test_build_update_helper_script_uses_powershell_without_find() -> None:
     assert "Move-Item -LiteralPath $BackupExe -Destination $TargetExe" in script
     assert "JOENSAUTODRAW_UPDATE_SILENT" in script
     assert "JOENSAUTODRAW_UPDATE_NO_RELAUNCH" in script
-    assert "Start-Process -LiteralPath $TargetExe" in script
+    assert "Start-Process -FilePath $TargetExe" in script
+    assert "Start-Process -LiteralPath" not in script
+    assert "Launch requested (pid=$($started.Id))." in script
+    assert "Could not relaunch updated app" in script
     assert "JoensAutoDraw-update.log" in script
     assert "Update installed. Click OK to start JoensAutoDraw." in script
     assert "findstr" not in script.lower()
