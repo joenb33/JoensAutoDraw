@@ -22,18 +22,12 @@ from autopaint.drawer import (
 from autopaint.failsafe import EmergencyStop, esc_backend_description
 from autopaint.pipeline import build_execution_commands, create_plan, execute_draw
 from autopaint.validation import DrawValidationError
-from autopaint.image_processing import (
-    RASTER_FILE_GLOB,
-    RASTER_SUFFIXES,
-    VECTOR_SUFFIXES,
-    build_binary_mask_from_prepared,
-    prepare_raster_image,
-)
+from autopaint.image_processing import RASTER_FILE_GLOB, RASTER_SUFFIXES, VECTOR_SUFFIXES
 from autopaint.updater import download_update, fetch_latest_update, schedule_apply_update
 from autopaint.types import Rect
 
 UPDATE_CHECK_DELAY_MS = 1500
-LIVE_PREVIEW_DEBOUNCE_MS = 250
+LIVE_PREVIEW_DEBOUNCE_MS = 650
 SIDEBAR_WIDTH = 400
 PREVIEW_MIN_SIZE = 220
 PREVIEW_MAX_SIZE = 420
@@ -100,6 +94,9 @@ class AutoPaintGui(ctk.CTk):
         self._trace_frames: dict[str, ctk.CTkFrame] = {}
         self._live_preview_after_id: str | None = None
         self._live_plan_generation = 0
+        self._live_plan_running = False
+        self._live_plan_pending = False
+        self._logged_import_warnings: set[str] = set()
         self._build_layout()
         self._bind_live_preview_traces()
         self._update_source_hint()
@@ -778,6 +775,13 @@ class AutoPaintGui(ctk.CTk):
 
         self.after(0, update)
 
+    def _append_import_warnings(self, warnings: tuple[str, ...]) -> None:
+        for warning in warnings:
+            if warning in self._logged_import_warnings:
+                continue
+            self._logged_import_warnings.add(warning)
+            self._append_log(f"Import: {warning}")
+
     def _set_busy(self, busy: bool, status: str) -> None:
         def update() -> None:
             self._busy = busy
@@ -804,6 +808,7 @@ class AutoPaintGui(ctk.CTk):
         )
         if file_path:
             self.image_path.set(file_path)
+            self._logged_import_warnings.clear()
             self._set_pipeline_step("import", "done")
             self._set_pipeline_step("plan", "ready")
             self._set_pipeline_step("draw", "waiting")
@@ -824,12 +829,6 @@ class AutoPaintGui(ctk.CTk):
     def _update_source_hint(self) -> None:
         if hasattr(self, "_source_hint_label"):
             self._source_hint_label.configure(text=self._source_kind_label())
-
-    def _is_raster_source(self) -> bool:
-        path = self.image_path.get().strip()
-        if not path:
-            return False
-        return Path(path).suffix.lower() in RASTER_SUFFIXES
 
     def _bind_live_preview_traces(self) -> None:
         replan_vars = (
@@ -881,20 +880,6 @@ class AutoPaintGui(ctk.CTk):
         if not self.image_path.get() or self._busy:
             return
 
-        if replan and self._is_raster_source():
-            try:
-                processing = self._build_processing()
-                prepared = prepare_raster_image(
-                    processing.image_path,
-                    auto_exif_rotate=processing.auto_exif_rotate,
-                )
-                mask = build_binary_mask_from_prepared(prepared, processing)
-                self._show_source_and_mask_preview(prepared.gray, mask)
-            except Exception:
-                pass
-            self._run_live_plan_worker()
-            return
-
         if replan:
             self._run_live_plan_worker()
             return
@@ -906,11 +891,17 @@ class AutoPaintGui(ctk.CTk):
     def _run_live_plan_worker(self) -> None:
         self._live_plan_generation += 1
         generation = self._live_plan_generation
+        if self._live_plan_running:
+            self._live_plan_pending = True
+            self.status_label.configure(text="Preview queued...")
+            return
+        self._live_plan_running = True
         try:
             processing = self._build_processing()
             contour_epsilon = float(self.contour_epsilon.get())
             mode = self.mode.get()
         except Exception:
+            self._live_plan_running = False
             return
 
         def worker() -> None:
@@ -918,22 +909,25 @@ class AutoPaintGui(ctk.CTk):
                 plan = create_plan(
                     processing=processing,
                     contour_epsilon=contour_epsilon,
+                    draw_mode=mode,
                 )
             except Exception:
-                return
-            if generation != self._live_plan_generation:
-                return
-            self._last_plan = plan
-            self._update_previews(plan, mode=mode)
-            self._update_toolpath_stats(plan)
-            for warning in plan.import_warnings:
-                self._append_log(f"Import: {warning}")
+                plan = None
 
             def finish() -> None:
-                self._set_pipeline_step("plan", "done")
-                if self._selected_rect is not None:
-                    self._set_pipeline_step("draw", "ready")
-                self.status_label.configure(text="Live preview updated")
+                self._live_plan_running = False
+                if plan is not None and generation == self._live_plan_generation:
+                    self._last_plan = plan
+                    self._update_previews(plan, mode=mode)
+                    self._update_toolpath_stats(plan)
+                    self._append_import_warnings(plan.import_warnings)
+                    self._set_pipeline_step("plan", "done")
+                    if self._selected_rect is not None:
+                        self._set_pipeline_step("draw", "ready")
+                    self.status_label.configure(text="Live preview updated")
+                if self._live_plan_pending:
+                    self._live_plan_pending = False
+                    self._schedule_live_preview(replan=True)
 
             self.after(0, finish)
 
@@ -954,18 +948,6 @@ class AutoPaintGui(ctk.CTk):
         canvas[y : y + dst_h, x : x + dst_w] = resized
         pil = Image.fromarray(canvas)
         return ctk.CTkImage(light_image=pil, dark_image=pil, size=(size, size))
-
-    def _show_source_and_mask_preview(self, source: np.ndarray, mask: np.ndarray) -> None:
-        source_img = self._array_to_preview_image(source)
-        mask_img = self._array_to_preview_image(mask)
-
-        def update() -> None:
-            current_toolpath = self._preview_images[2:3]
-            self._preview_images = [source_img, mask_img, *current_toolpath]
-            self.original_preview.configure(image=source_img, text="")
-            self.mask_preview.configure(image=mask_img, text="")
-
-        self.after(0, update)
 
     def _build_processing(self) -> ProcessingConfig:
         blur = int(round(self.blur.get()))
@@ -1042,16 +1024,16 @@ class AutoPaintGui(ctk.CTk):
                 plan = create_plan(
                     processing=processing,
                     contour_epsilon=contour_epsilon,
+                    draw_mode=mode,
                 )
                 self._last_plan = plan
                 self._append_log(
-                    f"Plan ready ({plan.source_kind}): {plan.source_width}x{plan.source_height}, "
+                    f"Plan ready ({plan.source_kind}/{mode}): {plan.source_width}x{plan.source_height}, "
                     f"{plan.polyline_count} contours, {plan.hatch_count} hatch paths, "
                     f"{plan.segment_count} scan segments, "
-                    f"{plan.command_count} contour commands."
+                    f"{plan.command_count} draw commands."
                 )
-                for warning in plan.import_warnings:
-                    self._append_log(f"Import: {warning}")
+                self._append_import_warnings(plan.import_warnings)
                 self._update_previews(plan, mode=mode)
                 self._update_toolpath_stats(plan)
                 self._set_busy(False, "Plan ready")
@@ -1090,6 +1072,7 @@ class AutoPaintGui(ctk.CTk):
                 plan = create_plan(
                     processing=processing,
                     contour_epsilon=contour_epsilon,
+                    draw_mode=mode,
                 )
                 self._last_plan = plan
                 self._update_previews(plan, mode=mode)
@@ -1098,8 +1081,7 @@ class AutoPaintGui(ctk.CTk):
                     f"Starting draw in {mode} mode from {plan.source_kind} "
                     f"(dry_run={draw_conf.dry_run})..."
                 )
-                for warning in plan.import_warnings:
-                    self._append_log(f"Import: {warning}")
+                self._append_import_warnings(plan.import_warnings)
                 if mode == "segments" and plan.segment_count == 0 and plan.polyline_count > 0:
                     self._append_log("Segments unavailable for this source, using contour paths.")
                 if mode == "hatch" and plan.hatch_count == 0 and plan.polyline_count > 0:

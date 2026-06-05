@@ -87,6 +87,7 @@ _SCREEN_WALK_STEP = 0.65
 
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_MOVE = 0x0001
 _DEBUG_LOG_ENABLED = False
 _TRACE_MOVE_EVENTS = False
 _TRACE_MAX_EVENT_LOGS = 0
@@ -401,6 +402,10 @@ def _move_cursor_fast(x: int, y: int) -> None:
     ctypes.windll.user32.SetCursorPos(int(x), int(y))
 
 
+def _send_mouse_move_event() -> None:
+    ctypes.windll.user32.mouse_event(_MOUSEEVENTF_MOVE, 0, 0, 0, 0)
+
+
 def _mouse_left_down_fast() -> None:
     ctypes.windll.user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
 
@@ -487,6 +492,7 @@ def _decimate_points_for_compatibility(
 def _drag_cursor(x: int, y: int, draw_config: DrawConfig) -> None:
     if draw_config.compatibility_mode:
         _move_cursor_fast(x, y)
+        _send_mouse_move_event()
         if draw_config.step_pause_seconds > 0:
             _sleep_if_needed(min(draw_config.step_pause_seconds, 0.001))
         return

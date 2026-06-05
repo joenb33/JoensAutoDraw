@@ -64,7 +64,11 @@ class PlanResult:
     import_warnings: tuple[str, ...] = ()
 
 
-def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanResult:
+def create_plan(
+    processing: ProcessingConfig,
+    contour_epsilon: float,
+    draw_mode: str | None = None,
+) -> PlanResult:
     suffix = processing.image_path.suffix.lower()
     if suffix in VECTOR_SUFFIXES:
         return _create_vector_plan(processing=processing)
@@ -75,38 +79,60 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
     )
     gray = prepared.gray
     mask = build_binary_mask_from_prepared(prepared, processing)
-    effective_epsilon = scaled_contour_epsilon(
-        contour_epsilon,
-        width=gray.shape[1],
-        height=gray.shape[0],
-        auto_scale=processing.auto_scale_epsilon,
-    )
+    selected_mode = draw_mode if draw_mode in {"contour", "hatch", "segments"} else "all"
 
-    segments = mask_to_segments(
-        mask=mask, sample_step=processing.sample_step, max_line_gap=processing.max_line_gap
-    )
-    raw_polylines = mask_to_contour_polylines(
-        mask=mask,
-        min_points=3,
-        contour_mode=processing.contour_mode,
-        min_contour_area=processing.min_contour_area,
-    )
-    polylines = simplify_polylines(raw_polylines, epsilon=effective_epsilon)
-    polylines = tune_polylines_for_draw(
-        polylines,
-        min_points=processing.vector_min_polyline_points,
-        sample_step_px=processing.vector_sample_step,
-    )
-    hatch_polylines = mask_to_hatch_polylines(
-        mask=mask,
-        spacing=processing.hatch_spacing,
-        angle_degrees=processing.hatch_angle_degrees,
-        max_gap=processing.hatch_max_gap,
-    )
+    segments = []
+    polylines = []
+    hatch_polylines = []
+    preview_segments = np.zeros_like(mask)
+    preview_polylines = np.zeros_like(mask)
 
-    preview_segments = render_segment_preview(mask=mask, segments=segments)
-    preview_polylines = render_polyline_preview(mask=mask, polylines=polylines)
+    if selected_mode in {"all", "segments"}:
+        segments = mask_to_segments(
+            mask=mask, sample_step=processing.sample_step, max_line_gap=processing.max_line_gap
+        )
+        preview_segments = render_segment_preview(mask=mask, segments=segments)
+
+    if selected_mode in {"all", "contour"}:
+        effective_epsilon = scaled_contour_epsilon(
+            contour_epsilon,
+            width=gray.shape[1],
+            height=gray.shape[0],
+            auto_scale=processing.auto_scale_epsilon,
+        )
+        raw_polylines = mask_to_contour_polylines(
+            mask=mask,
+            min_points=3,
+            contour_mode=processing.contour_mode,
+            min_contour_area=processing.min_contour_area,
+        )
+        polylines = simplify_polylines(raw_polylines, epsilon=effective_epsilon)
+        polylines = tune_polylines_for_draw(
+            polylines,
+            min_points=processing.vector_min_polyline_points,
+            sample_step_px=processing.vector_sample_step,
+        )
+        preview_polylines = render_polyline_preview(mask=mask, polylines=polylines)
+
+    if selected_mode in {"all", "hatch"}:
+        hatch_polylines = mask_to_hatch_polylines(
+            mask=mask,
+            spacing=processing.hatch_spacing,
+            angle_degrees=processing.hatch_angle_degrees,
+            max_gap=processing.hatch_max_gap,
+        )
+        if selected_mode == "hatch":
+            preview_polylines = render_polyline_preview(mask=mask, polylines=hatch_polylines)
+
     contour_commands = polylines_to_commands(polylines=polylines, min_polyline_points=2)
+    if selected_mode == "segments":
+        active_commands = segments_to_commands(segments)
+    elif selected_mode == "hatch":
+        active_commands = polylines_to_commands(
+            polylines=hatch_polylines, min_polyline_points=2
+        )
+    else:
+        active_commands = contour_commands
 
     return PlanResult(
         source_kind="image",
@@ -115,7 +141,7 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         segment_count=len(segments),
         hatch_count=len(hatch_polylines),
         polyline_count=len(polylines),
-        command_count=len(contour_commands),
+        command_count=len(active_commands),
         preview_segments=preview_segments,
         preview_polylines=preview_polylines,
         mask=mask,
@@ -123,7 +149,7 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         polylines=polylines,
         hatch_polylines=hatch_polylines,
         segments=segments,
-        tool_commands=contour_commands,
+        tool_commands=active_commands,
         import_warnings=prepared.warnings,
     )
 

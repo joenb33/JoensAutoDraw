@@ -358,6 +358,7 @@ def main() -> int:
     plan = create_plan(
         processing=processing,
         contour_epsilon=args.contour_epsilon,
+        draw_mode=args.mode,
     )
     _debug_log(
         "H3",
@@ -375,17 +376,18 @@ def main() -> int:
     print(f"Generated {plan.segment_count} stroke segments")
     print(f"Generated {plan.hatch_count} hatch paths")
     print(f"Generated {plan.polyline_count} contour polylines")
-    print(f"Generated {plan.command_count} contour tool commands")
     print(f"Selected mode: {args.mode}")
+    print(f"Generated {plan.command_count} selected-mode tool commands")
     for warning in plan.import_warnings:
         print(f"Import note: {warning}")
     print(f"Emergency stop: ESC ({esc_backend_description()}) or move cursor to top-left corner")
 
     if args.preview:
+        planned = plan.preview_segments if args.mode == "segments" else plan.preview_polylines
         show_preview(
             gray=plan.gray,
             binary=plan.mask,
-            planned=plan.preview_polylines if args.mode == "contour" else plan.preview_segments,
+            planned=planned,
         )
 
     target_rect = args.target_rect

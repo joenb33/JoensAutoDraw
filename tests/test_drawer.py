@@ -134,7 +134,7 @@ def test_simulate_tool_commands_counts_draw_pixels() -> None:
 
 
 def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = {"fast": 0, "moveTo": 0}
+    calls = {"fast": 0, "move_event": 0, "moveTo": 0}
 
     def _fast(x: int, y: int) -> None:
         calls["fast"] += 1
@@ -143,6 +143,10 @@ def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.M
         calls["moveTo"] += 1
 
     monkeypatch.setattr("autopaint.drawer._move_cursor_fast", _fast)
+    monkeypatch.setattr(
+        "autopaint.drawer._send_mouse_move_event",
+        lambda: calls.__setitem__("move_event", calls["move_event"] + 1),
+    )
     monkeypatch.setattr("autopaint.drawer.pyautogui.moveTo", _move_to)
 
     draw_config = DrawConfig(
@@ -154,6 +158,7 @@ def test_drag_cursor_uses_fast_moves_in_compatibility_mode(monkeypatch: pytest.M
     _drag_cursor(10, 20, draw_config)
 
     assert calls["fast"] == 1
+    assert calls["move_event"] == 1
     assert calls["moveTo"] == 0
 
 
