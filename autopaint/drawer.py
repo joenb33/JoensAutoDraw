@@ -190,6 +190,114 @@ def render_execution_preview_on_mask(
     return preview
 
 
+def render_tool_command_preview_on_mask(
+    mask: np.ndarray,
+    commands: Iterable[ToolCommand],
+    *,
+    source_size: RasterSize,
+    target_rect: Rect,
+    draw_config: DrawConfig,
+    thickness: int = 1,
+    show_travel: bool = False,
+) -> np.ndarray:
+    """Render the exact command stream used by draw_tool_commands back onto source space."""
+    preview = np.zeros_like(mask)
+    height, width = preview.shape[:2]
+    fit = _build_fit_transform(src=source_size, target=target_rect)
+    line_thickness = max(1, int(thickness))
+    pen_is_down = False
+    last_float_pos: tuple[float, float] | None = None
+    last_screen_pos: tuple[int, int] | None = None
+    stroke_pixels: list[tuple[int, int]] = []
+
+    def source_point(screen_x: int, screen_y: int) -> tuple[int, int] | None:
+        x = int(round((screen_x - fit.offset_x) / fit.scale))
+        y = int(round((screen_y - fit.offset_y) / fit.scale))
+        if 0 <= x < width and 0 <= y < height:
+            return x, y
+        return None
+
+    def draw_screen_line(
+        start: tuple[int, int],
+        end: tuple[int, int],
+        *,
+        color: int,
+        thickness_px: int,
+    ) -> None:
+        a = source_point(*start)
+        b = source_point(*end)
+        if a is None or b is None:
+            return
+        cv2.line(
+            preview,
+            a,
+            b,
+            color=color,
+            thickness=thickness_px,
+            lineType=cv2.LINE_8,
+        )
+
+    def finish_stroke() -> None:
+        nonlocal pen_is_down, stroke_pixels
+        if not pen_is_down:
+            return
+        drag_points = _prepare_drag_points(stroke_pixels, draw_config)
+        for idx in range(1, len(drag_points)):
+            draw_screen_line(
+                drag_points[idx - 1],
+                drag_points[idx],
+                color=255,
+                thickness_px=line_thickness,
+            )
+        pen_is_down = False
+        stroke_pixels = []
+
+    for cmd in commands:
+        if cmd.kind in {"move", "draw"}:
+            if cmd.x is None or cmd.y is None:
+                continue
+            fx, fy = _map_to_screen_float(cmd.x, cmd.y, fit)
+            screen_pos = (int(round(fx)), int(round(fy)))
+
+            if cmd.kind == "move":
+                finish_stroke()
+                if show_travel and last_screen_pos is not None and last_screen_pos != screen_pos:
+                    draw_screen_line(
+                        last_screen_pos,
+                        screen_pos,
+                        color=96,
+                        thickness_px=1,
+                    )
+                last_float_pos = (fx, fy)
+                last_screen_pos = screen_pos
+                continue
+
+            if not pen_is_down:
+                pen_is_down = True
+            if not stroke_pixels and last_float_pos is not None:
+                anchor = (
+                    int(round(last_float_pos[0])),
+                    int(round(last_float_pos[1])),
+                )
+                _append_unique_points(stroke_pixels, [anchor])
+            if last_float_pos is not None:
+                path = _expand_float_segment(last_float_pos[0], last_float_pos[1], fx, fy)
+                _append_unique_points(stroke_pixels, path[1:] if len(path) > 1 else path)
+            last_float_pos = (fx, fy)
+            last_screen_pos = screen_pos
+            continue
+
+        if cmd.kind == "down" and not pen_is_down:
+            pen_is_down = True
+            stroke_pixels = []
+        elif cmd.kind == "up" and pen_is_down:
+            finish_stroke()
+
+    if pen_is_down:
+        finish_stroke()
+    return preview
+
+
 def _polyline_to_screen_pixel_path(
     points: tuple[Point, ...], fit: FitTransform
 ) -> list[tuple[int, int]]:

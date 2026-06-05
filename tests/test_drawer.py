@@ -16,6 +16,7 @@ from autopaint.drawer import (
     map_to_screen,
     normalize_rect,
     render_execution_preview_on_mask,
+    render_tool_command_preview_on_mask,
     simulate_tool_commands,
 )
 from autopaint.toolpath import polylines_to_commands
@@ -182,6 +183,52 @@ def test_render_execution_preview_reflects_screen_mapping() -> None:
         thickness=1,
     )
     assert int(np.count_nonzero(preview)) > 20
+
+
+def test_render_tool_command_preview_uses_command_stream() -> None:
+    commands = [
+        ToolCommand(kind="move", x=5, y=10),
+        ToolCommand(kind="down"),
+        ToolCommand(kind="draw", x=35, y=10),
+        ToolCommand(kind="up"),
+    ]
+    mask = np.zeros((40, 40), dtype=np.uint8)
+
+    preview = render_tool_command_preview_on_mask(
+        mask,
+        commands,
+        source_size=RasterSize(width=40, height=40),
+        target_rect=Rect(left=0, top=0, right=400, bottom=400),
+        draw_config=DrawConfig(compatibility_mode=True, move_duration=0.0),
+    )
+
+    assert int(np.count_nonzero(preview[10])) >= 25
+
+
+def test_render_tool_command_preview_can_show_pen_up_travel() -> None:
+    commands = [
+        ToolCommand(kind="move", x=2, y=2),
+        ToolCommand(kind="down"),
+        ToolCommand(kind="draw", x=10, y=2),
+        ToolCommand(kind="up"),
+        ToolCommand(kind="move", x=10, y=12),
+        ToolCommand(kind="down"),
+        ToolCommand(kind="draw", x=20, y=12),
+        ToolCommand(kind="up"),
+    ]
+    mask = np.zeros((30, 30), dtype=np.uint8)
+
+    preview = render_tool_command_preview_on_mask(
+        mask,
+        commands,
+        source_size=RasterSize(width=30, height=30),
+        target_rect=Rect(left=0, top=0, right=300, bottom=300),
+        draw_config=DrawConfig(compatibility_mode=True, move_duration=0.0),
+        show_travel=True,
+    )
+
+    assert 96 in preview
+    assert 255 in preview
 
 
 def test_contour_stroke_survives_batch_decimation() -> None:

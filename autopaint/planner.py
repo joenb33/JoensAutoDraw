@@ -108,6 +108,8 @@ def simplify_polylines(polylines: list[Polyline], epsilon: float) -> list[Polyli
         contour = np.array([[[p.x, p.y]] for p in polyline.points], dtype=np.int32)
         approx = cv2.approxPolyDP(contour, epsilon=epsilon, closed=True)
         points = tuple(Point(x=int(p[0][0]), y=int(p[0][1])) for p in approx)
+        if len(points) >= 3 and points[0] != points[-1]:
+            points = (*points, points[0])
         if len(points) >= 2:
             simplified.append(Polyline(points=points))
     return simplified

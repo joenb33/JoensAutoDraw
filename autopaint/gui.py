@@ -16,11 +16,11 @@ from autopaint.config import DrawConfig, ProcessingConfig
 from autopaint.drawer import (
     BoundsViolation,
     RasterSize,
-    render_execution_preview_on_mask,
+    render_tool_command_preview_on_mask,
     simulate_tool_commands,
 )
 from autopaint.failsafe import EmergencyStop, esc_backend_description
-from autopaint.pipeline import build_execution_commands, create_plan, execute_draw, resolve_draw_polylines
+from autopaint.pipeline import build_execution_commands, create_plan, execute_draw
 from autopaint.validation import DrawValidationError
 from autopaint.image_processing import (
     RASTER_FILE_GLOB,
@@ -29,7 +29,6 @@ from autopaint.image_processing import (
     build_binary_mask_from_prepared,
     prepare_raster_image,
 )
-from autopaint.planner import render_polyline_preview, render_segment_preview
 from autopaint.updater import download_update, fetch_latest_update, schedule_apply_update
 from autopaint.types import Rect
 
@@ -189,11 +188,14 @@ class AutoPaintGui(ctk.CTk):
         self._add_path_controls(sidebar)
         tabs = ctk.CTkTabview(sidebar, corner_radius=10)
         tabs.grid(row=3, column=0, sticky="ew", pady=(8, 6))
-        raster_tab = tabs.add("Trace")
+        raster_tab = tabs.add("Mask")
+        scan_tab = tabs.add("Scan")
         path_tab = tabs.add("Path")
         raster_tab.grid_columnconfigure(1, weight=1)
+        scan_tab.grid_columnconfigure(1, weight=1)
         path_tab.grid_columnconfigure(1, weight=1)
         self._add_processing_controls(raster_tab)
+        self._add_scan_controls(scan_tab)
         self._add_vector_controls(path_tab)
         self._source_hint_label = ctk.CTkLabel(
             sidebar,
@@ -479,27 +481,11 @@ class AutoPaintGui(ctk.CTk):
         row += 1
         self._add_slider(parent, row, "Blur (odd)", self.blur, 1, 21)
         row += 1
-        self._add_slider(parent, row, "Step", self.step, 1, 8)
-        row += 1
-        self._add_slider(parent, row, "Line gap", self.line_gap, 0, 8)
-        row += 1
         self._add_slider(parent, row, "Contrast (CLAHE)", self.clahe_clip, 0.0, 8.0)
-        row += 1
-        self._add_slider(parent, row, "Contour epsilon", self.contour_epsilon, 0.5, 6.0)
-        row += 1
-        self._add_slider(parent, row, "Min contour area", self.min_contour_area, 0, 500)
         row += 1
         self._add_slider(parent, row, "Morph close", self.morph_close, 0, 15)
         row += 1
         self._add_slider(parent, row, "Morph open", self.morph_open, 0, 15)
-        row += 1
-
-        ctk.CTkLabel(parent, text="Contour scope").grid(row=row, column=0, sticky="w", pady=4)
-        ctk.CTkSegmentedButton(
-            parent,
-            values=["external", "all", "largest"],
-            variable=self.contour_scope,
-        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
         row += 1
 
         ctk.CTkCheckBox(parent, text="Auto threshold (Otsu)", variable=self.use_otsu).grid(
@@ -518,42 +504,78 @@ class AutoPaintGui(ctk.CTk):
             row=row, column=0, columnspan=2, sticky="w", pady=6
         )
         row += 1
+        ctk.CTkLabel(
+            parent,
+            text="Mask decides what pixels are drawable. Scan and Path use this same mask differently.",
+            justify="left",
+            anchor="w",
+            wraplength=SIDEBAR_WIDTH - 40,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
+
+    def _add_scan_controls(self, parent) -> None:
+        row = 0
+        ctk.CTkLabel(
+            parent,
+            text="Scanline fill",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 8))
+        row += 1
+        self._add_slider(parent, row, "Row step", self.step, 1, 8)
+        row += 1
+        self._add_slider(parent, row, "Bridge gap", self.line_gap, 0, 8)
+        row += 1
+        ctk.CTkLabel(
+            parent,
+            text=(
+                "Segments mode draws one horizontal stroke per masked run.\n"
+                "Lower Row step fills more densely; Bridge gap joins small holes."
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=SIDEBAR_WIDTH - 40,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
+
+    def _add_vector_controls(self, parent) -> None:
+        row = 0
+        ctk.CTkLabel(
+            parent,
+            text="Contour paths",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 8))
+        row += 1
+        self._add_slider(parent, row, "Contour epsilon", self.contour_epsilon, 0.5, 6.0)
+        row += 1
+        self._add_slider(parent, row, "Min contour area", self.min_contour_area, 0, 500)
+        row += 1
+
+        ctk.CTkLabel(parent, text="Contour scope").grid(row=row, column=0, sticky="w", pady=4)
+        ctk.CTkSegmentedButton(
+            parent,
+            values=["external", "all", "largest"],
+            variable=self.contour_scope,
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+        row += 1
         ctk.CTkCheckBox(
             parent,
             text="Auto-scale contour epsilon to image size",
             variable=self.auto_scale_epsilon,
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
         row += 1
-        ctk.CTkLabel(
-            parent,
-            text="Threshold = flat art. Sketch = photos/handwriting (edge trace).",
-            justify="left",
-            anchor="w",
-            wraplength=SIDEBAR_WIDTH - 40,
-        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
-
-    def _add_vector_controls(self, parent) -> None:
-        row = 0
-        ctk.CTkLabel(
-            parent,
-            text="Contour path tuning",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 8))
-        row += 1
-        self._add_slider(parent, row, "Path sample (px)", self.vector_step, 0.5, 6.0)
+        self._add_slider(parent, row, "Point spacing (px)", self.vector_step, 0.5, 6.0)
         row += 1
         self._add_slider(parent, row, "Min path points", self.vector_min_points, 2, 20)
         row += 1
-        self._add_slider(parent, row, "Jump split (px)", self.vector_jump_threshold, 2.0, 80.0)
+        self._add_slider(parent, row, "SVG jump split (px)", self.vector_jump_threshold, 2.0, 80.0)
         row += 1
         ctk.CTkLabel(
             parent,
             text=(
-                "Lower Path sample = denser drawn lines (better for Paint).\n"
-                "Jump split mainly affects imported SVG/G-code paths."
+                "Contour mode draws outlines from the current mask, SVG, or G-code.\n"
+                "Lower Point spacing creates denser mouse paths."
             ),
             justify="left",
             anchor="w",
+            wraplength=SIDEBAR_WIDTH - 40,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
     def _add_draw_controls(self, parent: ctk.CTkScrollableFrame) -> None:
@@ -976,58 +998,31 @@ class AutoPaintGui(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _update_previews(self, plan, mode: str) -> None:
-        def render_travel_preview(base: np.ndarray) -> np.ndarray:
-            source_size = RasterSize(width=plan.source_width, height=plan.source_height)
-            draw_conf = self._build_draw()
-            ordered = resolve_draw_polylines(
-                plan=plan,
-                draw_mode=mode,
-                draw_config=draw_conf,
-                target_rect=self._reference_rect(plan),
-                source_size=source_size,
-            )
-            if not self.show_travel_preview.get() or len(ordered) < 2:
-                return base
-            travel = base.copy()
-            for idx in range(1, len(ordered)):
-                prev = ordered[idx - 1].points[-1]
-                cur = ordered[idx].points[0]
-                cv2.line(
-                    travel,
-                    (prev.x, prev.y),
-                    (cur.x, cur.y),
-                    color=96,
-                    thickness=1,
-                    lineType=cv2.LINE_8,
-                )
-            return travel
-
         def to_ctk_image(array):
             return self._array_to_preview_image(array)
 
         def update_ui() -> None:
             preview_thickness = max(1, int(round(self.preview_stroke_px.get())))
-            use_contour = mode == "contour" or not plan.segments
             draw_conf = self._build_draw()
             source_size = RasterSize(width=plan.source_width, height=plan.source_height)
-            if self._selected_rect is not None and use_contour:
-                planned = render_execution_preview_on_mask(
-                    plan.mask,
-                    plan.polylines,
-                    source_size=source_size,
-                    target_rect=self._selected_rect,
-                    draw_config=draw_conf,
-                    thickness=preview_thickness,
-                )
-            elif use_contour:
-                planned = render_polyline_preview(
-                    mask=plan.mask, polylines=plan.polylines, thickness=preview_thickness
-                )
-            else:
-                planned = render_segment_preview(
-                    mask=plan.mask, segments=plan.segments, thickness=preview_thickness
-                )
-            mask_for_preview = render_travel_preview(plan.mask)
+            target_rect = self._reference_rect(plan)
+            commands = build_execution_commands(
+                plan=plan,
+                draw_mode=mode,
+                draw_config=draw_conf,
+                target_rect=target_rect,
+                source_size=source_size,
+            )
+            planned = render_tool_command_preview_on_mask(
+                plan.mask,
+                commands,
+                source_size=source_size,
+                target_rect=target_rect,
+                draw_config=draw_conf,
+                thickness=preview_thickness,
+                show_travel=self.show_travel_preview.get(),
+            )
+            mask_for_preview = plan.mask
             mask_img = to_ctk_image(mask_for_preview)
             plan_img = to_ctk_image(planned)
             self._preview_images = [mask_img, plan_img]

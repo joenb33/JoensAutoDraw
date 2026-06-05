@@ -59,7 +59,8 @@ def test_simplify_polylines_reduces_point_count() -> None:
     simplified = simplify_polylines([polyline], epsilon=2.0)
 
     assert len(simplified) == 1
-    assert len(simplified[0].points) < len(polyline.points)
+    assert len(set(simplified[0].points)) < len(polyline.points)
+    assert simplified[0].points[0] == simplified[0].points[-1]
 
 
 def test_mask_to_contour_polylines_external_ignores_hole(square_mask: np.ndarray) -> None:
