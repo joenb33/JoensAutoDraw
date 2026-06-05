@@ -34,9 +34,9 @@ from autopaint.types import Rect
 
 UPDATE_CHECK_DELAY_MS = 1500
 LIVE_PREVIEW_DEBOUNCE_MS = 250
-SIDEBAR_WIDTH = 360
-PREVIEW_MIN_SIZE = 300
-PREVIEW_MAX_SIZE = 520
+SIDEBAR_WIDTH = 400
+PREVIEW_MIN_SIZE = 220
+PREVIEW_MAX_SIZE = 420
 ACCENT_COLOR = "#4ea1ff"
 SUCCESS_COLOR = "#22c55e"
 
@@ -48,8 +48,8 @@ class AutoPaintGui(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title(f"JoensAutoDraw v{__version__}")
-        self.geometry("1280x820")
-        self.minsize(1100, 720)
+        self.geometry("1440x860")
+        self.minsize(1180, 740)
 
         self.image_path = ctk.StringVar(value="")
         self.threshold = ctk.IntVar(value=140)
@@ -95,6 +95,9 @@ class AutoPaintGui(ctk.CTk):
         self._slider_value_labels: dict[str, ctk.CTkLabel] = {}
         self._pipeline_labels: dict[str, ctk.CTkLabel] = {}
         self._toolpath_stats_label: ctk.CTkLabel | None = None
+        self._operation_frames: dict[str, ctk.CTkFrame] = {}
+        self._operation_container: ctk.CTkFrame | None = None
+        self._trace_frames: dict[str, ctk.CTkFrame] = {}
         self._live_preview_after_id: str | None = None
         self._live_plan_generation = 0
         self._build_layout()
@@ -188,18 +191,25 @@ class AutoPaintGui(ctk.CTk):
             text_color="#9ca3af",
         ).grid(row=1, column=0, sticky="w", pady=(0, 12))
 
-        self._add_path_controls(sidebar)
-        tabs = ctk.CTkTabview(sidebar, corner_radius=10)
-        tabs.grid(row=3, column=0, sticky="ew", pady=(8, 6))
-        raster_tab = tabs.add("Mask")
-        scan_tab = tabs.add("Scan")
-        path_tab = tabs.add("Path")
-        raster_tab.grid_columnconfigure(1, weight=1)
-        scan_tab.grid_columnconfigure(1, weight=1)
-        path_tab.grid_columnconfigure(1, weight=1)
-        self._add_processing_controls(raster_tab)
-        self._add_scan_controls(scan_tab)
-        self._add_vector_controls(path_tab)
+        source_section = ctk.CTkFrame(sidebar, fg_color="transparent")
+        source_section.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        source_section.grid_columnconfigure(0, weight=1)
+        self._add_path_controls(source_section)
+
+        operation_section = ctk.CTkFrame(sidebar, fg_color="transparent")
+        operation_section.grid(row=3, column=0, sticky="ew", pady=(4, 8))
+        operation_section.grid_columnconfigure(1, weight=1)
+        self._add_operation_picker(operation_section)
+
+        mask_section = ctk.CTkFrame(sidebar, fg_color="transparent")
+        mask_section.grid(row=4, column=0, sticky="ew", pady=(4, 8))
+        mask_section.grid_columnconfigure(1, weight=1)
+        self._add_processing_controls(mask_section)
+
+        self._operation_container = ctk.CTkFrame(sidebar, fg_color="transparent")
+        self._operation_container.grid(row=5, column=0, sticky="ew", pady=(4, 8))
+        self._operation_container.grid_columnconfigure(0, weight=1)
+        self._add_operation_controls(self._operation_container)
         self._source_hint_label = ctk.CTkLabel(
             sidebar,
             text="",
@@ -209,8 +219,13 @@ class AutoPaintGui(ctk.CTk):
             text_color="#9ca3af",
             font=ctk.CTkFont(size=11),
         )
-        self._source_hint_label.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-        self._add_draw_controls(sidebar)
+        self._source_hint_label.grid(row=6, column=0, sticky="ew", pady=(0, 8))
+
+        draw_section = ctk.CTkFrame(sidebar, fg_color="transparent")
+        draw_section.grid(row=7, column=0, sticky="ew", pady=(4, 8))
+        draw_section.grid_columnconfigure(1, weight=1)
+        self._add_draw_controls(draw_section)
+        self._set_operation_panel(self.mode.get())
 
         main = ctk.CTkFrame(self, corner_radius=12)
         main.grid(row=0, column=1, sticky="nsew", padx=(8, 16), pady=16)
@@ -220,7 +235,7 @@ class AutoPaintGui(ctk.CTk):
 
         preview_shell = ctk.CTkFrame(main, corner_radius=12)
         preview_shell.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 8))
-        preview_shell.grid_columnconfigure((0, 1), weight=1, uniform="preview")
+        preview_shell.grid_columnconfigure((0, 1, 2), weight=1, uniform="preview")
         preview_shell.grid_rowconfigure(1, weight=1)
 
         header_row = ctk.CTkFrame(preview_shell, fg_color="transparent")
@@ -233,7 +248,7 @@ class AutoPaintGui(ctk.CTk):
         ).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
             header_row,
-            text="Inspect mask and toolpath before drawing",
+            text="Inspect original, mask, and exact command toolpath before drawing",
             font=ctk.CTkFont(size=12),
             text_color="#9ca3af",
         ).grid(row=1, column=0, sticky="w")
@@ -246,23 +261,38 @@ class AutoPaintGui(ctk.CTk):
         )
         self.status_label.grid(row=0, column=1, rowspan=2, sticky="e")
 
+        original_card = ctk.CTkFrame(preview_shell, corner_radius=10)
+        original_card.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 12))
+        original_card.grid_rowconfigure(1, weight=1)
+        original_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(original_card, text="Original", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(8, 4)
+        )
+        self.original_preview = ctk.CTkLabel(
+            original_card,
+            text="Load a source",
+            fg_color=("#1a1a1a", "#111111"),
+            corner_radius=8,
+        )
+        self.original_preview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
         mask_card = ctk.CTkFrame(preview_shell, corner_radius=10)
-        mask_card.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 12))
+        mask_card.grid(row=1, column=1, sticky="nsew", padx=6, pady=(0, 12))
         mask_card.grid_rowconfigure(1, weight=1)
         mask_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(mask_card, text="Mask / edges", anchor="w").grid(
+        ctk.CTkLabel(mask_card, text="Mask", anchor="w").grid(
             row=0, column=0, sticky="w", padx=10, pady=(8, 4)
         )
         self.mask_preview = ctk.CTkLabel(
             mask_card,
-            text="Load an image to preview",
+            text="Mask appears after import",
             fg_color=("#1a1a1a", "#111111"),
             corner_radius=8,
         )
         self.mask_preview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
         path_card = ctk.CTkFrame(preview_shell, corner_radius=10)
-        path_card.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=(0, 12))
+        path_card.grid(row=1, column=2, sticky="nsew", padx=(6, 12), pady=(0, 12))
         path_card.grid_rowconfigure(1, weight=1)
         path_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(path_card, text="Toolpath", anchor="w").grid(
@@ -285,7 +315,7 @@ class AutoPaintGui(ctk.CTk):
             text_color="#cbd5e1",
         )
         self._toolpath_stats_label.grid(
-            row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12)
+            row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 12)
         )
         preview_shell.bind("<Configure>", self._on_preview_shell_resize)
 
@@ -357,7 +387,7 @@ class AutoPaintGui(ctk.CTk):
     def _on_preview_shell_resize(self, event) -> None:
         if event.width < 100:
             return
-        per_panel = max(PREVIEW_MIN_SIZE, min(PREVIEW_MAX_SIZE, (event.width - 48) // 2))
+        per_panel = max(PREVIEW_MIN_SIZE, min(PREVIEW_MAX_SIZE, (event.width - 72) // 3))
         if abs(per_panel - self._preview_canvas_size) < 24:
             return
         self._preview_canvas_size = per_panel
@@ -465,23 +495,60 @@ class AutoPaintGui(ctk.CTk):
         ctk.CTkEntry(path_row, textvariable=self.image_path).grid(row=0, column=0, sticky="ew", padx=(0, 8))
         ctk.CTkButton(path_row, text="Browse", width=90, command=self.on_browse).grid(row=0, column=1)
 
+    def _add_operation_picker(self, parent) -> None:
+        ctk.CTkLabel(
+            parent,
+            text="Operation",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(4, 8))
+        ctk.CTkSegmentedButton(
+            parent,
+            values=["contour", "hatch", "segments"],
+            variable=self.mode,
+            command=lambda value: self._set_operation_panel(value),
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+
     def _add_processing_controls(self, parent: ctk.CTkScrollableFrame) -> None:
         row = 0
+
+        ctk.CTkLabel(parent, text="Mask", font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(4, 8)
+        )
+        row += 1
 
         ctk.CTkLabel(parent, text="Trace mode").grid(row=row, column=0, sticky="w", pady=4)
         ctk.CTkSegmentedButton(
             parent,
             values=["threshold", "sketch"],
             variable=self.trace_mode,
+            command=lambda value: self._set_trace_panel(value),
         ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
         row += 1
 
-        self._add_slider(parent, row, "Threshold", self.threshold, 0, 255)
+        trace_container = ctk.CTkFrame(parent, fg_color="transparent")
+        trace_container.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+        trace_container.grid_columnconfigure(1, weight=1)
         row += 1
-        self._add_slider(parent, row, "Canny low", self.canny_low, 1, 255)
-        row += 1
-        self._add_slider(parent, row, "Canny high", self.canny_high, 2, 255)
-        row += 1
+
+        threshold_frame = ctk.CTkFrame(trace_container, fg_color="transparent")
+        sketch_frame = ctk.CTkFrame(trace_container, fg_color="transparent")
+        threshold_frame.grid_columnconfigure(1, weight=1)
+        sketch_frame.grid_columnconfigure(1, weight=1)
+        self._trace_frames = {"threshold": threshold_frame, "sketch": sketch_frame}
+
+        threshold_row = 0
+        self._add_slider(threshold_frame, threshold_row, "Threshold", self.threshold, 0, 255)
+        threshold_row += 1
+        ctk.CTkCheckBox(threshold_frame, text="Auto threshold (Otsu)", variable=self.use_otsu).grid(
+            row=threshold_row, column=0, columnspan=2, sticky="w", pady=6
+        )
+
+        sketch_row = 0
+        self._add_slider(sketch_frame, sketch_row, "Canny low", self.canny_low, 1, 255)
+        sketch_row += 1
+        self._add_slider(sketch_frame, sketch_row, "Canny high", self.canny_high, 2, 255)
+        self._set_trace_panel(self.trace_mode.get())
+
         self._add_slider(parent, row, "Blur (odd)", self.blur, 1, 21)
         row += 1
         self._add_slider(parent, row, "Contrast (CLAHE)", self.clahe_clip, 0.0, 8.0)
@@ -491,10 +558,6 @@ class AutoPaintGui(ctk.CTk):
         self._add_slider(parent, row, "Morph open", self.morph_open, 0, 15)
         row += 1
 
-        ctk.CTkCheckBox(parent, text="Auto threshold (Otsu)", variable=self.use_otsu).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=6
-        )
-        row += 1
         ctk.CTkCheckBox(parent, text="Invert threshold", variable=self.invert).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=6
         )
@@ -514,6 +577,44 @@ class AutoPaintGui(ctk.CTk):
             anchor="w",
             wraplength=SIDEBAR_WIDTH - 40,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
+
+    def _set_trace_panel(self, trace_mode: str) -> None:
+        if not self._trace_frames:
+            return
+        panel_key = trace_mode if trace_mode in self._trace_frames else "threshold"
+        for key, frame in self._trace_frames.items():
+            if key == panel_key:
+                frame.grid(row=0, column=0, sticky="ew")
+            else:
+                frame.grid_remove()
+
+    def _add_operation_controls(self, parent) -> None:
+        scan_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        hatch_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        contour_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        for frame in (scan_frame, hatch_frame, contour_frame):
+            frame.grid_columnconfigure(1, weight=1)
+
+        self._operation_frames = {
+            "segments": scan_frame,
+            "hatch": hatch_frame,
+            "contour": contour_frame,
+        }
+        self._add_scan_controls(scan_frame)
+        self._add_hatch_controls(hatch_frame)
+        self._add_contour_controls(contour_frame)
+
+    def _set_operation_panel(self, mode: str) -> None:
+        if not self._operation_frames:
+            return
+        panel_key = "segments" if mode == "segments" else mode
+        if panel_key not in self._operation_frames:
+            panel_key = "contour"
+        for key, frame in self._operation_frames.items():
+            if key == panel_key:
+                frame.grid(row=0, column=0, sticky="ew")
+            else:
+                frame.grid_remove()
 
     def _add_scan_controls(self, parent) -> None:
         row = 0
@@ -538,7 +639,7 @@ class AutoPaintGui(ctk.CTk):
             wraplength=SIDEBAR_WIDTH - 40,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
-    def _add_vector_controls(self, parent) -> None:
+    def _add_contour_controls(self, parent) -> None:
         row = 0
         ctk.CTkLabel(
             parent,
@@ -580,12 +681,14 @@ class AutoPaintGui(ctk.CTk):
             anchor="w",
             wraplength=SIDEBAR_WIDTH - 40,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
-        row += 1
+
+    def _add_hatch_controls(self, parent) -> None:
+        row = 0
         ctk.CTkLabel(
             parent,
             text="Hatch fill",
             font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(12, 8))
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 8))
         row += 1
         self._add_slider(parent, row, "Hatch spacing", self.hatch_spacing, 1, 24)
         row += 1
@@ -605,18 +708,10 @@ class AutoPaintGui(ctk.CTk):
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
     def _add_draw_controls(self, parent: ctk.CTkScrollableFrame) -> None:
-        row = 5
+        row = 0
         ctk.CTkLabel(parent, text="Draw", font=ctk.CTkFont(size=15, weight="bold")).grid(
             row=row, column=0, columnspan=3, sticky="w", pady=(12, 8)
         )
-        row += 1
-
-        ctk.CTkLabel(parent, text="Mode").grid(row=row, column=0, sticky="w")
-        ctk.CTkSegmentedButton(
-            parent,
-            values=["contour", "hatch", "segments"],
-            variable=self.mode,
-        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
         row += 1
 
         self._add_slider(parent, row, "Speed", self.speed, 1.0, 100.0)
@@ -794,7 +889,7 @@ class AutoPaintGui(ctk.CTk):
                     auto_exif_rotate=processing.auto_exif_rotate,
                 )
                 mask = build_binary_mask_from_prepared(prepared, processing)
-                self._show_mask_preview(mask)
+                self._show_source_and_mask_preview(prepared.gray, mask)
             except Exception:
                 pass
             self._run_live_plan_worker()
@@ -860,11 +955,14 @@ class AutoPaintGui(ctk.CTk):
         pil = Image.fromarray(canvas)
         return ctk.CTkImage(light_image=pil, dark_image=pil, size=(size, size))
 
-    def _show_mask_preview(self, mask: np.ndarray) -> None:
+    def _show_source_and_mask_preview(self, source: np.ndarray, mask: np.ndarray) -> None:
+        source_img = self._array_to_preview_image(source)
         mask_img = self._array_to_preview_image(mask)
 
         def update() -> None:
-            self._preview_images = [mask_img, *self._preview_images[1:2]]
+            current_toolpath = self._preview_images[2:3]
+            self._preview_images = [source_img, mask_img, *current_toolpath]
+            self.original_preview.configure(image=source_img, text="")
             self.mask_preview.configure(image=mask_img, text="")
 
         self.after(0, update)
@@ -1058,9 +1156,11 @@ class AutoPaintGui(ctk.CTk):
                 show_travel=self.show_travel_preview.get(),
             )
             mask_for_preview = plan.mask
+            original_img = to_ctk_image(plan.gray)
             mask_img = to_ctk_image(mask_for_preview)
             plan_img = to_ctk_image(planned)
-            self._preview_images = [mask_img, plan_img]
+            self._preview_images = [original_img, mask_img, plan_img]
+            self.original_preview.configure(image=original_img, text="")
             self.mask_preview.configure(image=mask_img, text="")
             self.plan_preview.configure(image=plan_img, text="")
 
