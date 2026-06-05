@@ -37,6 +37,8 @@ def validate_target_rect(rect: Rect) -> list[str]:
 def validate_plan_has_draw_content(plan, draw_mode: str) -> None:
     if draw_mode == "segments" and plan.segments:
         return
+    if draw_mode == "hatch" and getattr(plan, "hatch_polylines", None):
+        return
     if plan.polylines:
         return
     if plan.segments:

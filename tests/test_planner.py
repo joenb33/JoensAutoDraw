@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from autopaint.planner import (
+    mask_to_hatch_polylines,
     mask_to_contour_polylines,
     mask_to_segments,
     resample_polylines,
@@ -36,6 +37,36 @@ def test_mask_to_segments_respects_sample_step(horizontal_stroke_mask: np.ndarra
 
     assert len(segments) == 1
     assert segments[0].y == 10
+
+
+def test_mask_to_hatch_polylines_fills_mask_with_spaced_paths(square_mask: np.ndarray) -> None:
+    polylines = mask_to_hatch_polylines(
+        square_mask,
+        spacing=10,
+        angle_degrees=0,
+        max_gap=0,
+    )
+
+    assert len(polylines) >= 5
+    assert all(len(polyline.points) >= 2 for polyline in polylines)
+    assert min(point.x for polyline in polylines for point in polyline.points) >= 20
+    assert max(point.x for polyline in polylines for point in polyline.points) <= 80
+
+
+def test_mask_to_hatch_polylines_supports_angled_fill(square_mask: np.ndarray) -> None:
+    polylines = mask_to_hatch_polylines(
+        square_mask,
+        spacing=8,
+        angle_degrees=45,
+        max_gap=1,
+    )
+
+    assert polylines
+    assert any(
+        polyline.points[0].x != polyline.points[-1].x
+        and polyline.points[0].y != polyline.points[-1].y
+        for polyline in polylines
+    )
 
 
 def test_mask_to_contour_polylines_finds_shape(square_mask: np.ndarray) -> None:

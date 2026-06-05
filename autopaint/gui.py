@@ -58,6 +58,9 @@ class AutoPaintGui(ctk.CTk):
         self.vector_step = ctk.DoubleVar(value=0.5)
         self.vector_min_points = ctk.IntVar(value=2)
         self.vector_jump_threshold = ctk.DoubleVar(value=10.0)
+        self.hatch_spacing = ctk.IntVar(value=6)
+        self.hatch_angle = ctk.DoubleVar(value=0.0)
+        self.hatch_gap = ctk.IntVar(value=2)
         self.line_gap = ctk.IntVar(value=2)
         self.speed = ctk.DoubleVar(value=70.0)
         self.step_pause_ms = ctk.DoubleVar(value=1.2)
@@ -577,6 +580,29 @@ class AutoPaintGui(ctk.CTk):
             anchor="w",
             wraplength=SIDEBAR_WIDTH - 40,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
+        row += 1
+        ctk.CTkLabel(
+            parent,
+            text="Hatch fill",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(12, 8))
+        row += 1
+        self._add_slider(parent, row, "Hatch spacing", self.hatch_spacing, 1, 24)
+        row += 1
+        self._add_slider(parent, row, "Hatch angle", self.hatch_angle, 0.0, 179.0)
+        row += 1
+        self._add_slider(parent, row, "Hatch bridge gap", self.hatch_gap, 0, 12)
+        row += 1
+        ctk.CTkLabel(
+            parent,
+            text=(
+                "Hatch mode fills the current mask with continuous engraver-style lines.\n"
+                "Use angle/spacing to control direction and density."
+            ),
+            justify="left",
+            anchor="w",
+            wraplength=SIDEBAR_WIDTH - 40,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 4))
 
     def _add_draw_controls(self, parent: ctk.CTkScrollableFrame) -> None:
         row = 5
@@ -588,9 +614,9 @@ class AutoPaintGui(ctk.CTk):
         ctk.CTkLabel(parent, text="Mode").grid(row=row, column=0, sticky="w")
         ctk.CTkSegmentedButton(
             parent,
-            values=["contour", "segments"],
+            values=["contour", "hatch", "segments"],
             variable=self.mode,
-        ).grid(row=row, column=1, sticky="ew", pady=4)
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
         row += 1
 
         self._add_slider(parent, row, "Speed", self.speed, 1.0, 100.0)
@@ -733,6 +759,9 @@ class AutoPaintGui(ctk.CTk):
             self.vector_step,
             self.vector_min_points,
             self.vector_jump_threshold,
+            self.hatch_spacing,
+            self.hatch_angle,
+            self.hatch_gap,
             self.mode,
         )
         preview_only_vars = (self.preview_stroke_px, self.show_travel_preview, self.optimize_contour_travel)
@@ -860,6 +889,9 @@ class AutoPaintGui(ctk.CTk):
             vector_sample_step=max(0.5, float(self.vector_step.get())),
             vector_min_polyline_points=max(2, int(round(self.vector_min_points.get()))),
             vector_jump_threshold_px=max(1.0, float(self.vector_jump_threshold.get())),
+            hatch_spacing=max(1, int(round(self.hatch_spacing.get()))),
+            hatch_angle_degrees=float(self.hatch_angle.get()),
+            hatch_max_gap=max(0, int(round(self.hatch_gap.get()))),
             use_otsu=self.use_otsu.get(),
             morph_close_kernel=max(0, int(round(self.morph_close.get()))),
             morph_open_kernel=max(0, int(round(self.morph_open.get()))),
@@ -916,8 +948,9 @@ class AutoPaintGui(ctk.CTk):
                 self._last_plan = plan
                 self._append_log(
                     f"Plan ready ({plan.source_kind}): {plan.source_width}x{plan.source_height}, "
-                    f"{plan.polyline_count} polylines, {plan.segment_count} segments, "
-                    f"{plan.command_count} tool commands."
+                    f"{plan.polyline_count} contours, {plan.hatch_count} hatch paths, "
+                    f"{plan.segment_count} scan segments, "
+                    f"{plan.command_count} contour commands."
                 )
                 for warning in plan.import_warnings:
                     self._append_log(f"Import: {warning}")
@@ -971,6 +1004,8 @@ class AutoPaintGui(ctk.CTk):
                     self._append_log(f"Import: {warning}")
                 if mode == "segments" and plan.segment_count == 0 and plan.polyline_count > 0:
                     self._append_log("Segments unavailable for this source, using contour paths.")
+                if mode == "hatch" and plan.hatch_count == 0 and plan.polyline_count > 0:
+                    self._append_log("Hatch unavailable for this source, using contour paths.")
                 if selected_rect is None:
                     raise RuntimeError("No draw area selected. Click Select Area first.")
                 execute_draw(

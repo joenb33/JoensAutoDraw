@@ -137,6 +137,24 @@ def parse_args() -> argparse.Namespace:
         help="Split SVG sampled paths at large jumps (pen-up detection).",
     )
     parser.add_argument(
+        "--hatch-spacing",
+        type=_int_min(1),
+        default=6,
+        help="Hatch/fill line spacing in source pixels.",
+    )
+    parser.add_argument(
+        "--hatch-angle",
+        type=float,
+        default=0.0,
+        help="Hatch/fill angle in degrees (0=horizontal, 90=vertical).",
+    )
+    parser.add_argument(
+        "--hatch-gap",
+        type=_int_min(0),
+        default=2,
+        help="Max off-mask gap bridged inside hatch strokes.",
+    )
+    parser.add_argument(
         "--speed", type=_float_min(0.0), default=0.002, help="Mouse move duration."
     )
     parser.add_argument(
@@ -247,9 +265,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("segments", "contour"),
+        choices=("segments", "contour", "hatch"),
         default="contour",
-        help="Drawing mode. contour is usually cleaner.",
+        help="Drawing mode. contour=outline, hatch=fill lines, segments=scanline fill.",
     )
     parser.add_argument(
         "--contour-epsilon",
@@ -295,6 +313,9 @@ def main() -> int:
         vector_sample_step=args.vector_step,
         vector_min_polyline_points=args.vector_min_points,
         vector_jump_threshold_px=args.vector_jump_threshold,
+        hatch_spacing=args.hatch_spacing,
+        hatch_angle_degrees=args.hatch_angle,
+        hatch_max_gap=args.hatch_gap,
         use_otsu=args.otsu,
         morph_close_kernel=args.morph_close,
         morph_open_kernel=args.morph_open,
@@ -352,8 +373,9 @@ def main() -> int:
     print(f"Loaded image: {processing.image_path}")
     print(f"Source size: {plan.source_width}x{plan.source_height}")
     print(f"Generated {plan.segment_count} stroke segments")
+    print(f"Generated {plan.hatch_count} hatch paths")
     print(f"Generated {plan.polyline_count} contour polylines")
-    print(f"Generated {plan.command_count} tool commands")
+    print(f"Generated {plan.command_count} contour tool commands")
     print(f"Selected mode: {args.mode}")
     for warning in plan.import_warnings:
         print(f"Import note: {warning}")

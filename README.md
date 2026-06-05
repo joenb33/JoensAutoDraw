@@ -153,10 +153,11 @@ Browse → Build Plan → Select Area → Dry Run → Draw Now
 
 | Mode | Best for | Output style |
 |------|----------|--------------|
-| **Segments** | Filled logos, photos, bold shapes | Horizontal scan-line fill — very reliable in MS Paint |
 | **Contour** | Line art, SVG, CNC paths | Outline polylines with pen-up travel between paths |
+| **Hatch** | Engraver-style fills | Continuous fill lines across the mask at a chosen angle/spacing |
+| **Segments** | Simple filled logos/bold shapes | Horizontal scan-line fill — reliable but more fragmented |
 
-Vector files always run as **contour**. Segment mode on vectors falls back to contour automatically.
+Vector files always run as **contour**. Hatch/segment modes on vectors fall back to contour automatically.
 
 ---
 
@@ -169,10 +170,13 @@ python -m autopaint.main --image ".\examples\cat.png" --mode contour --dry-run
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--image` | required | Source path |
-| `--mode` | `contour` | `contour` or `segments` |
+| `--mode` | `contour` | `contour`, `hatch`, or `segments` |
 | `--threshold` | `140` | Binarization 0–255 |
 | `--blur` | `5` | Gaussian kernel (odd) |
 | `--step` | `2` | Segment row step |
+| `--hatch-spacing` | `6` | Hatch/fill line spacing in source pixels |
+| `--hatch-angle` | `0` | Hatch/fill angle in degrees |
+| `--hatch-gap` | `2` | Max off-mask gap bridged inside hatch strokes |
 | `--contour-epsilon` | `1.2` | Contour simplification |
 | `--speed` | `0.002` | Move duration (seconds) |
 | `--dry-run` | off | No mouse movement |

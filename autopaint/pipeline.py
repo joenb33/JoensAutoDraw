@@ -30,6 +30,7 @@ from autopaint.image_processing import (
 )
 from autopaint.types import Rect
 from autopaint.planner import (
+    mask_to_hatch_polylines,
     mask_to_contour_polylines,
     mask_to_segments,
     render_polyline_preview,
@@ -49,6 +50,7 @@ class PlanResult:
     source_width: int
     source_height: int
     segment_count: int
+    hatch_count: int
     polyline_count: int
     command_count: int
     preview_segments: Any
@@ -56,6 +58,7 @@ class PlanResult:
     mask: Any
     gray: Any
     polylines: Any
+    hatch_polylines: Any
     segments: Any
     tool_commands: Any
     import_warnings: tuple[str, ...] = ()
@@ -94,6 +97,12 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         min_points=processing.vector_min_polyline_points,
         sample_step_px=processing.vector_sample_step,
     )
+    hatch_polylines = mask_to_hatch_polylines(
+        mask=mask,
+        spacing=processing.hatch_spacing,
+        angle_degrees=processing.hatch_angle_degrees,
+        max_gap=processing.hatch_max_gap,
+    )
 
     preview_segments = render_segment_preview(mask=mask, segments=segments)
     preview_polylines = render_polyline_preview(mask=mask, polylines=polylines)
@@ -104,6 +113,7 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         source_width=gray.shape[1],
         source_height=gray.shape[0],
         segment_count=len(segments),
+        hatch_count=len(hatch_polylines),
         polyline_count=len(polylines),
         command_count=len(contour_commands),
         preview_segments=preview_segments,
@@ -111,6 +121,7 @@ def create_plan(processing: ProcessingConfig, contour_epsilon: float) -> PlanRes
         mask=mask,
         gray=gray,
         polylines=polylines,
+        hatch_polylines=hatch_polylines,
         segments=segments,
         tool_commands=contour_commands,
         import_warnings=prepared.warnings,
@@ -145,6 +156,7 @@ def _create_vector_plan(processing: ProcessingConfig) -> PlanResult:
         source_width=width,
         source_height=height,
         segment_count=0,
+        hatch_count=0,
         polyline_count=len(polylines),
         command_count=len(commands),
         preview_segments=np.zeros_like(mask),
@@ -152,6 +164,7 @@ def _create_vector_plan(processing: ProcessingConfig) -> PlanResult:
         mask=mask,
         gray=gray,
         polylines=polylines,
+        hatch_polylines=[],
         segments=[],
         tool_commands=commands,
     )
@@ -168,7 +181,8 @@ def resolve_draw_polylines(
     if draw_mode == "segments" and plan.segments:
         return []
 
-    polylines = list(plan.polylines)
+    use_hatch = draw_mode == "hatch" and plan.hatch_polylines
+    polylines = list(plan.hatch_polylines if use_hatch else plan.polylines)
     if draw_config.optimize_contour_travel and polylines:
         fit = _build_fit_transform(src=source_size, target=target_rect)
         polylines = _order_polylines_for_travel(polylines, fit)

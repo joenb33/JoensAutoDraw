@@ -49,6 +49,72 @@ def test_build_execution_commands_uses_segments_in_segment_mode(temp_square_imag
     assert segment_commands != contour_commands
 
 
+def test_build_execution_commands_uses_hatch_paths_in_hatch_mode(temp_square_image) -> None:
+    plan = create_plan(
+        processing=ProcessingConfig(
+            image_path=temp_square_image,
+            hatch_spacing=8,
+            hatch_angle_degrees=45,
+        ),
+        contour_epsilon=1.2,
+    )
+    draw_config = DrawConfig(optimize_contour_travel=True)
+    target = Rect(left=0, top=0, right=400, bottom=400)
+    source_size = RasterSize(width=plan.source_width, height=plan.source_height)
+
+    hatch_commands = build_execution_commands(
+        plan=plan,
+        draw_mode="hatch",
+        draw_config=draw_config,
+        target_rect=target,
+        source_size=source_size,
+    )
+    contour_commands = build_execution_commands(
+        plan=plan,
+        draw_mode="contour",
+        draw_config=draw_config,
+        target_rect=target,
+        source_size=source_size,
+    )
+
+    assert plan.hatch_count > 0
+    assert len(hatch_commands) > 0
+    assert hatch_commands != contour_commands
+
+
+def test_hatch_mode_falls_back_to_contours_when_no_hatch_paths() -> None:
+    polyline = Polyline(points=(Point(x=0, y=0), Point(x=10, y=0)))
+    plan_like = type(
+        "PlanStub",
+        (),
+        {
+            "segments": [],
+            "hatch_polylines": [],
+            "polylines": [polyline],
+        },
+    )()
+    draw_config = DrawConfig(optimize_contour_travel=False)
+    target = Rect(left=0, top=0, right=100, bottom=100)
+    source_size = RasterSize(width=20, height=20)
+
+    hatch_commands = build_execution_commands(
+        plan=plan_like,
+        draw_mode="hatch",
+        draw_config=draw_config,
+        target_rect=target,
+        source_size=source_size,
+    )
+    contour_commands = build_execution_commands(
+        plan=plan_like,
+        draw_mode="contour",
+        draw_config=draw_config,
+        target_rect=target,
+        source_size=source_size,
+    )
+
+    assert hatch_commands == contour_commands
+
+
 def test_resolve_draw_polylines_can_reorder_for_travel() -> None:
     plan_like = type(
         "PlanStub",

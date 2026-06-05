@@ -4,6 +4,7 @@ from typing import Literal
 
 ContourMode = Literal["external", "all", "largest"]
 TraceMode = Literal["threshold", "sketch"]
+DrawMode = Literal["contour", "hatch", "segments"]
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,9 @@ class ProcessingConfig:
     trace_mode: TraceMode = "threshold"
     canny_low: int = 40
     canny_high: int = 120
+    hatch_spacing: int = 6
+    hatch_angle_degrees: float = 0.0
+    hatch_max_gap: int = 2
 
 
 @dataclass(frozen=True)
